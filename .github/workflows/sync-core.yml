@@ -159,7 +159,7 @@ jobs:
               --output "previous/dsh-core-update-${platform}.json" || true
 
             HASH="$(sha256sum "$ZIP" | cut -d' ' -f1)"
-            VERSION="$(jq -r '.component.dshVersion' "$MANIFEST" | tr -c 'A-Za-z0-9._-' '-')"
+            VERSION="$(jq -jr '.component.dshVersion' "$MANIFEST" | tr -c 'A-Za-z0-9._-' '-')"
             PUBLISHED_ZIP="DSH-Portable-update-${platform}-${VERSION}-${HASH:0:12}.zip"
             cp "$ZIP" "publish/$PUBLISHED_ZIP"
             URL="https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-stable/$PUBLISHED_ZIP"
