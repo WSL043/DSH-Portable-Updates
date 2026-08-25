@@ -1,0 +1,198 @@
+name: Sync verified DSH core
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: verified-core-channel
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.source.outputs.publish }}
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      fingerprint: ${{ steps.source.outputs.fingerprint }}
+    steps:
+      - name: Resolve the latest accepted DSH-Portable source
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(gh api \
+            'repos/WSL043/DSH-Portable/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=1' \
+            --jq '.workflow_runs[0].head_sha')"
+          test -n "$SOURCE_SHA" && test "$SOURCE_SHA" != null
+
+          curl --fail --location --retry 3 \
+            "https://raw.githubusercontent.com/WSL043/DSH-Portable/$SOURCE_SHA/upstream.lock.json" \
+            --output upstream.lock.json
+          curl --fail --location --retry 3 \
+            "https://raw.githubusercontent.com/WSL043/DSH-Portable/$SOURCE_SHA/app/package-lock.json" \
+            --output app-package-lock.json
+          FINGERPRINT="$(sha256sum upstream.lock.json app-package-lock.json | sha256sum | cut -d' ' -f1)"
+
+          CURRENT="$(curl --silent --show-error --location \
+            'https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-stable/channel-source.json' \
+            2>/dev/null || true)"
+          CURRENT_FINGERPRINT="$(printf '%s' "$CURRENT" | jq -r '.fingerprint // empty' 2>/dev/null || true)"
+
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "fingerprint=$FINGERPRINT" >> "$GITHUB_OUTPUT"
+          if [ "$FINGERPRINT" = "$CURRENT_FINGERPRINT" ]; then
+            echo 'publish=false' >> "$GITHUB_OUTPUT"
+            echo "Verified core is already current at $SOURCE_SHA."
+          else
+            echo 'publish=true' >> "$GITHUB_OUTPUT"
+            echo "A verified core build is required for $SOURCE_SHA."
+          fi
+
+  build:
+    needs: resolve
+    if: needs.resolve.outputs.publish == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            platform: windows
+            arch: x64
+            artifact: windows-x64
+          - runner: macos-15
+            platform: macos
+            arch: arm64
+            artifact: macos-arm64
+          - runner: macos-15-intel
+            platform: macos
+            arch: x64
+            artifact: macos-x64
+          - runner: ubuntu-22.04
+            platform: linux
+            arch: x64
+            artifact: linux-x64
+          - runner: ubuntu-22.04-arm
+            platform: linux
+            arch: arm64
+            artifact: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: WSL043/DSH-Portable
+          ref: ${{ needs.resolve.outputs.source_sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.19.0
+      - uses: dtolnay/rust-toolchain@1.88.0
+        if: matrix.platform == 'linux'
+        with:
+          components: rustfmt
+      - name: Install pinned Linux desktop build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          bash scripts/install-linux-packages.sh \
+            build-essential curl file fuse libayatana-appindicator3-dev libfuse2 \
+            libgtk-3-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev patchelf \
+            unzip xauth xvfb xdotool zip
+      - name: Build Windows core component
+        if: matrix.platform == 'windows'
+        shell: powershell
+        run: ./scripts/build-windows.ps1
+      - name: Build macOS core component
+        if: matrix.platform == 'macos'
+        run: bash scripts/build-macos.sh "${{ matrix.arch }}"
+      - name: Build Linux core component
+        if: matrix.platform == 'linux'
+        run: bash scripts/build-linux.sh "${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: core-${{ matrix.artifact }}
+          path: |
+            artifacts/DSH-Portable-update-${{ matrix.artifact }}.zip
+            artifacts/dsh-core-update-${{ matrix.artifact }}.json
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: WSL043/DSH-Portable
+          ref: ${{ needs.resolve.outputs.source_sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.19.0
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: core-*
+          merge-multiple: true
+          path: artifacts
+      - name: Verify and prepare an atomic stable channel
+        env:
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          FINGERPRINT: ${{ needs.resolve.outputs.fingerprint }}
+        run: |
+          set -euo pipefail
+          mkdir -p publish previous
+          for platform in windows-x64 macos-arm64 macos-x64 linux-x64 linux-arm64; do
+            MANIFEST="artifacts/dsh-core-update-${platform}.json"
+            ZIP="artifacts/DSH-Portable-update-${platform}.zip"
+            node scripts/verify-update-artifact.mjs "$MANIFEST" "$ZIP" engine
+
+            curl --silent --show-error --location \
+              "https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-stable/dsh-core-update-${platform}.json" \
+              --output "previous/dsh-core-update-${platform}.json" || true
+
+            HASH="$(sha256sum "$ZIP" | cut -d' ' -f1)"
+            VERSION="$(jq -r '.component.dshVersion' "$MANIFEST" | tr -c 'A-Za-z0-9._-' '-')"
+            PUBLISHED_ZIP="DSH-Portable-update-${platform}-${VERSION}-${HASH:0:12}.zip"
+            cp "$ZIP" "publish/$PUBLISHED_ZIP"
+            URL="https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-stable/$PUBLISHED_ZIP"
+            jq --arg url "$URL" '.component.urls = [$url]' "$MANIFEST" \
+              > "publish/dsh-core-update-${platform}.json"
+          done
+          jq -n \
+            --arg sourceSha "$SOURCE_SHA" \
+            --arg fingerprint "$FINGERPRINT" \
+            --arg publishedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{schemaVersion:1, sourceRepository:"WSL043/DSH-Portable", sourceSha:$sourceSha, fingerprint:$fingerprint, publishedAt:$publishedAt}' \
+            > publish/channel-source.json
+      - name: Publish archives first and manifests last
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view update-channel-core-stable --repo WSL043/DSH-Portable-Updates >/dev/null 2>&1 || \
+            gh release create update-channel-core-stable --repo WSL043/DSH-Portable-Updates --target main --prerelease \
+              --title 'Verified DeepSeek Harness core channel' \
+              --notes 'Machine-readable update assets used by DSH-Portable.'
+          gh release upload update-channel-core-stable --repo WSL043/DSH-Portable-Updates publish/*.zip --clobber
+          gh release upload update-channel-core-stable --repo WSL043/DSH-Portable-Updates publish/dsh-core-update-*.json publish/channel-source.json --clobber
+      - name: Keep only the current and immediately previous archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          KEEP="$(mktemp)"
+          find publish -maxdepth 1 -name '*.zip' -printf '%f\n' >> "$KEEP"
+          for manifest in previous/*.json; do
+            [ -s "$manifest" ] || continue
+            jq -r '.component.urls[]? | split("/")[-1]' "$manifest" >> "$KEEP"
+          done
+          sort -u "$KEEP" -o "$KEEP"
+          RELEASE_ID="$(gh api repos/WSL043/DSH-Portable-Updates/releases/tags/update-channel-core-stable --jq .id)"
+          gh api "repos/WSL043/DSH-Portable-Updates/releases/$RELEASE_ID/assets?per_page=100" \
+            --paginate --jq '.[] | [.id,.name] | @tsv' | while IFS=$'\t' read -r id name; do
+              case "$name" in
+                *.zip) grep -Fxq "$name" "$KEEP" || gh api -X DELETE "repos/WSL043/DSH-Portable-Updates/releases/assets/$id" ;;
+              esac
+            done
