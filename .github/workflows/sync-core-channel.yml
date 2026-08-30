@@ -27,7 +27,6 @@ jobs:
     outputs:
       publish: ${{ steps.source.outputs.publish }}
       source_sha: ${{ steps.source.outputs.source_sha }}
-      source_run_id: ${{ steps.source.outputs.source_run_id }}
       fingerprint: ${{ steps.source.outputs.fingerprint }}
     steps:
       - name: Resolve the latest accepted DSH-Portable source
@@ -44,21 +43,18 @@ jobs:
           esac
 
           SOURCE_SHA=''
-          SOURCE_RUN_ID=''
-          while IFS=$'\t' read -r candidate_sha candidate_run_id; do
+          while IFS= read -r candidate_sha; do
             VERSION="$(curl --fail --silent --show-error --location --retry 3 \
               "https://raw.githubusercontent.com/WSL043/DSH-Portable/$candidate_sha/package.json" | jq -r .version)"
             if { [ "$CHANNEL" = stable ] && [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; } || \
                { [ "$CHANNEL" = candidate ] && [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*$ ]]; }; then
               SOURCE_SHA="$candidate_sha"
-              SOURCE_RUN_ID="$candidate_run_id"
               break
             fi
           done < <(gh api \
             'repos/WSL043/DSH-Portable/actions/workflows/ci.yml/runs?status=success&per_page=100' \
-            --jq '.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch") | [.head_sha, .id] | @tsv')
+            --jq '.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch") | .head_sha')
           test -n "$SOURCE_SHA" && test "$SOURCE_SHA" != null
-          test -n "$SOURCE_RUN_ID" && test "$SOURCE_RUN_ID" != null
 
           curl --fail --location --retry 3 \
             "https://raw.githubusercontent.com/WSL043/DSH-Portable/$SOURCE_SHA/$LOCK_FILE" \
@@ -74,7 +70,6 @@ jobs:
           CURRENT_FINGERPRINT="$(printf '%s' "$CURRENT" | jq -r '.fingerprint // empty' 2>/dev/null || true)"
 
           echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
-          echo "source_run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
           echo "fingerprint=$FINGERPRINT" >> "$GITHUB_OUTPUT"
           if [ "${{ inputs.rebuild || false }}" != true ] && [ "$FINGERPRINT" = "$CURRENT_FINGERPRINT" ]; then
             echo 'publish=false' >> "$GITHUB_OUTPUT"
@@ -84,8 +79,55 @@ jobs:
             echo "A verified core build is required for $SOURCE_SHA."
           fi
 
-  build:
+  preview-runtime:
     needs: resolve
+    if: needs.resolve.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: WSL043/DSH-Portable
+          ref: ${{ needs.resolve.outputs.source_sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.19.0
+      - name: Resolve the locked preview source
+        id: preview
+        run: |
+          node -e "const lock=require('./upstream.preview.lock.json'); console.log('commit='+lock.dsh.reviewedCommit); console.log('packageManager='+lock.dsh.packageManager)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        if: inputs.channel == 'candidate'
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: ${{ steps.preview.outputs.commit }}
+          path: upstream
+      - name: Build and pack the locked official preview source
+        if: inputs.channel == 'candidate'
+        run: |
+          test "$(git -C upstream rev-parse HEAD)" = '${{ steps.preview.outputs.commit }}'
+          npm install --global '${{ steps.preview.outputs.packageManager }}'
+          pnpm --dir upstream install --frozen-lockfile
+          pnpm --dir upstream run build:official
+          pnpm --dir upstream run release:pack --family dsh --out dist/npm --concurrency 8
+          pnpm --dir upstream run release:pack --family vendor --out dist/npm-vendor --concurrency 8
+          mkdir -p upstream/dist/npm-landlock
+          pnpm --dir upstream/native/landlock-run/packages/entry pack --pack-destination "$PWD/upstream/dist/npm-landlock"
+      - name: Create a stable-channel marker
+        if: inputs.channel == 'stable'
+        run: mkdir preview-packed && printf 'stable\n' > preview-packed/STABLE
+      - uses: actions/upload-artifact@v7
+        with:
+          name: preview-packed-${{ inputs.channel }}
+          path: |
+            upstream/dist/npm
+            upstream/dist/npm-vendor
+            upstream/dist/npm-landlock
+            preview-packed/STABLE
+          if-no-files-found: ignore
+          compression-level: 0
+
+  build:
+    needs: [resolve, preview-runtime]
     if: needs.resolve.outputs.publish == 'true'
     strategy:
       fail-fast: false
@@ -120,12 +162,10 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24.19.0
-      - name: Download the exact verified preview package set
-        if: inputs.channel == 'candidate'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_RUN_ID: ${{ needs.resolve.outputs.source_run_id }}
-        run: gh run download "$SOURCE_RUN_ID" --repo WSL043/DSH-Portable --name preview-packed-runtime --dir preview-packed
+      - uses: actions/download-artifact@v8
+        with:
+          name: preview-packed-${{ inputs.channel }}
+          path: preview-packed
       - name: Stage the exact verified preview runtime
         if: inputs.channel == 'candidate'
         run: node scripts/stage-preview-runtime.mjs --packed-root preview-packed/upstream/dist --output preview-app
