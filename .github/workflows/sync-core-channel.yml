@@ -244,9 +244,12 @@ jobs:
             ZIP="artifacts/DSH-Portable-update-${platform}.zip"
             node scripts/verify-update-artifact.mjs "$MANIFEST" "$ZIP" engine
 
-            curl --silent --show-error --location \
+            PREVIOUS="previous/dsh-core-update-${platform}.json"
+            if ! curl --fail --silent --show-error --location \
               "https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-$CHANNEL/dsh-core-update-${platform}.json" \
-              --output "previous/dsh-core-update-${platform}.json" || true
+              --output "$PREVIOUS"; then
+              rm -f "$PREVIOUS"
+            fi
 
             HASH="$(sha256sum "$ZIP" | cut -d' ' -f1)"
             VERSION="$(jq -jr '.component.dshVersion' "$MANIFEST" | tr -c 'A-Za-z0-9._-' '-')"
