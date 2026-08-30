@@ -14,6 +14,7 @@ on:
         default: false
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
@@ -26,6 +27,7 @@ jobs:
     outputs:
       publish: ${{ steps.source.outputs.publish }}
       source_sha: ${{ steps.source.outputs.source_sha }}
+      source_run_id: ${{ steps.source.outputs.source_run_id }}
       fingerprint: ${{ steps.source.outputs.fingerprint }}
     steps:
       - name: Resolve the latest accepted DSH-Portable source
@@ -42,18 +44,21 @@ jobs:
           esac
 
           SOURCE_SHA=''
-          while IFS= read -r candidate_sha; do
+          SOURCE_RUN_ID=''
+          while IFS=$'\t' read -r candidate_sha candidate_run_id; do
             VERSION="$(curl --fail --silent --show-error --location --retry 3 \
               "https://raw.githubusercontent.com/WSL043/DSH-Portable/$candidate_sha/package.json" | jq -r .version)"
             if { [ "$CHANNEL" = stable ] && [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; } || \
                { [ "$CHANNEL" = candidate ] && [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*$ ]]; }; then
               SOURCE_SHA="$candidate_sha"
+              SOURCE_RUN_ID="$candidate_run_id"
               break
             fi
           done < <(gh api \
             'repos/WSL043/DSH-Portable/actions/workflows/ci.yml/runs?status=success&per_page=100' \
-            --jq '.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch") | .head_sha')
+            --jq '.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch") | [.head_sha, .id] | @tsv')
           test -n "$SOURCE_SHA" && test "$SOURCE_SHA" != null
+          test -n "$SOURCE_RUN_ID" && test "$SOURCE_RUN_ID" != null
 
           curl --fail --location --retry 3 \
             "https://raw.githubusercontent.com/WSL043/DSH-Portable/$SOURCE_SHA/$LOCK_FILE" \
@@ -69,6 +74,7 @@ jobs:
           CURRENT_FINGERPRINT="$(printf '%s' "$CURRENT" | jq -r '.fingerprint // empty' 2>/dev/null || true)"
 
           echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "source_run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
           echo "fingerprint=$FINGERPRINT" >> "$GITHUB_OUTPUT"
           if [ "${{ inputs.rebuild || false }}" != true ] && [ "$FINGERPRINT" = "$CURRENT_FINGERPRINT" ]; then
             echo 'publish=false' >> "$GITHUB_OUTPUT"
@@ -114,6 +120,15 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24.19.0
+      - name: Download the exact verified preview package set
+        if: inputs.channel == 'candidate'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ needs.resolve.outputs.source_run_id }}
+        run: gh run download "$SOURCE_RUN_ID" --repo WSL043/DSH-Portable --name preview-packed-runtime --dir preview-packed
+      - name: Stage the exact verified preview runtime
+        if: inputs.channel == 'candidate'
+        run: node scripts/stage-preview-runtime.mjs --packed-root preview-packed/upstream/dist --output preview-app
       - uses: dtolnay/rust-toolchain@1.88.0
         if: matrix.platform == 'linux'
         with:
@@ -128,13 +143,28 @@ jobs:
       - name: Build Windows core component
         if: matrix.platform == 'windows'
         shell: powershell
-        run: ./scripts/build-windows.ps1
+        run: |
+          if ('${{ inputs.channel }}' -eq 'candidate') {
+            ./scripts/build-windows.ps1 -PreviewAppSource preview-app
+          } else {
+            ./scripts/build-windows.ps1
+          }
       - name: Build macOS core component
         if: matrix.platform == 'macos'
-        run: bash scripts/build-macos.sh "${{ matrix.arch }}"
+        run: |
+          if [ '${{ inputs.channel }}' = candidate ]; then
+            PREVIEW_APP_SOURCE="$PWD/preview-app" bash scripts/build-macos.sh "${{ matrix.arch }}"
+          else
+            bash scripts/build-macos.sh "${{ matrix.arch }}"
+          fi
       - name: Build Linux core component
         if: matrix.platform == 'linux'
-        run: bash scripts/build-linux.sh "${{ matrix.arch }}"
+        run: |
+          if [ '${{ inputs.channel }}' = candidate ]; then
+            PREVIEW_APP_SOURCE="$PWD/preview-app" bash scripts/build-linux.sh "${{ matrix.arch }}"
+          else
+            bash scripts/build-linux.sh "${{ matrix.arch }}"
+          fi
       - uses: actions/upload-artifact@v7
         with:
           name: core-${{ inputs.channel }}-${{ matrix.artifact }}
