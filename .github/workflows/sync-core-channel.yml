@@ -93,6 +93,7 @@ jobs:
           node-version: 24.19.0
       - name: Resolve the locked preview source
         id: preview
+        if: inputs.channel == 'candidate'
         run: |
           node -e "const lock=require('./upstream.preview.lock.json'); console.log('commit='+lock.dsh.reviewedCommit); console.log('packageManager='+lock.dsh.packageManager)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
