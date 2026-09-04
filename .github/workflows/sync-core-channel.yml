@@ -47,7 +47,7 @@ jobs:
             VERSION="$(curl --fail --silent --show-error --location --retry 3 \
               "https://raw.githubusercontent.com/WSL043/DSH-Portable/$candidate_sha/package.json" | jq -r .version)"
             if { [ "$CHANNEL" = stable ] && [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; } || \
-               { [ "$CHANNEL" = candidate ] && [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*$ ]]; }; then
+               { [ "$CHANNEL" = candidate ] && [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)\.[1-9][0-9]*$ ]]; }; then
               SOURCE_SHA="$candidate_sha"
               break
             fi
@@ -223,9 +223,16 @@ jobs:
         with:
           repository: WSL043/DSH-Portable
           ref: ${{ needs.resolve.outputs.source_sha }}
+      - uses: actions/checkout@v7
+        with:
+          repository: WSL043/DSH-Portable-Updates
+          ref: main
+          path: update-channel
       - uses: actions/setup-node@v7
         with:
           node-version: 24.19.0
+      - name: Test the bounded core-version catalog builder
+        run: node --test update-channel/tests/*.test.mjs
       - uses: actions/download-artifact@v8
         with:
           pattern: core-${{ inputs.channel }}-*
@@ -250,6 +257,12 @@ jobs:
               --output "$PREVIOUS"; then
               rm -f "$PREVIOUS"
             fi
+            PREVIOUS_INDEX="previous/dsh-core-index-${platform}.json"
+            if ! curl --fail --silent --show-error --location \
+              "https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-$CHANNEL/dsh-core-index-${platform}.json" \
+              --output "$PREVIOUS_INDEX"; then
+              rm -f "$PREVIOUS_INDEX"
+            fi
 
             HASH="$(sha256sum "$ZIP" | cut -d' ' -f1)"
             VERSION="$(jq -jr '.component.dshVersion' "$MANIFEST" | tr -c 'A-Za-z0-9._-' '-')"
@@ -258,6 +271,9 @@ jobs:
             URL="https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-$CHANNEL/$PUBLISHED_ZIP"
             jq --arg url "$URL" '.component.urls = [$url]' "$MANIFEST" \
               > "publish/dsh-core-update-${platform}.json"
+            node update-channel/scripts/build-core-index.mjs \
+              "$CHANNEL" "$platform" "publish/dsh-core-update-${platform}.json" \
+              "$PREVIOUS_INDEX" "$PREVIOUS" publish
           done
           jq -n \
             --arg channel "$CHANNEL" \
@@ -278,18 +294,17 @@ jobs:
               --title "Verified DeepSeek Harness core $CHANNEL channel" \
               --notes "Machine-readable $CHANNEL update assets used by DSH-Portable."
           gh release upload "$TAG" --repo WSL043/DSH-Portable-Updates publish/*.zip --clobber
-          gh release upload "$TAG" --repo WSL043/DSH-Portable-Updates publish/dsh-core-update-*.json publish/channel-source.json --clobber
-      - name: Keep only the current and immediately previous archives
+          gh release upload "$TAG" --repo WSL043/DSH-Portable-Updates publish/dsh-core-update-*.json publish/dsh-core-index-*.json publish/channel-source.json --clobber
+      - name: Keep only archives referenced by the bounded version catalogs
         env:
           CHANNEL: ${{ inputs.channel }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           KEEP="$(mktemp)"
-          find publish -maxdepth 1 -name '*.zip' -printf '%f\n' >> "$KEEP"
-          for manifest in previous/*.json; do
-            [ -s "$manifest" ] || continue
-            jq -r '.component.urls[]? | split("/")[-1]' "$manifest" >> "$KEEP"
+          for catalog in publish/dsh-core-index-*.json; do
+            jq -r '.versions[].manifest.component.urls[]? | split("/")[-1]' "$catalog" >> "$KEEP"
+            jq -r '.versions[].manifestUrl | split("/")[-1]' "$catalog" >> "$KEEP"
           done
           sort -u "$KEEP" -o "$KEEP"
           RELEASE_ID="$(gh api "repos/WSL043/DSH-Portable-Updates/releases/tags/update-channel-core-$CHANNEL" --jq .id)"
@@ -297,5 +312,7 @@ jobs:
             --paginate --jq '.[] | [.id,.name] | @tsv' | while IFS=$'\t' read -r id name; do
               case "$name" in
                 *.zip) grep -Fxq "$name" "$KEEP" || gh api -X DELETE "repos/WSL043/DSH-Portable-Updates/releases/assets/$id" ;;
+                dsh-core-update-windows-x64-[0-9]*.json|dsh-core-update-macos-arm64-[0-9]*.json|dsh-core-update-macos-x64-[0-9]*.json|dsh-core-update-linux-x64-[0-9]*.json|dsh-core-update-linux-arm64-[0-9]*.json)
+                  grep -Fxq "$name" "$KEEP" || gh api -X DELETE "repos/WSL043/DSH-Portable-Updates/releases/assets/$id" ;;
               esac
             done
