@@ -248,6 +248,10 @@ jobs:
             "artifacts/dsh-core-update-${{ matrix.artifact }}.json" `
             "artifacts/DSH-Portable-update-${{ matrix.artifact }}.zip"
           if ($LASTEXITCODE -ne 0) { throw "Windows core update smoke failed with exit code $LASTEXITCODE" }
+          & node scripts/smoke-windows-subprocess-hide.mjs $BaselineRoot
+          if ($LASTEXITCODE -ne 0) { throw 'Windows core subprocess visibility smoke failed.' }
+          & node scripts/smoke-windows-startup-theme.mjs $BaselineRoot --disposable
+          if ($LASTEXITCODE -ne 0) { throw 'Windows core startup and theme smoke failed.' }
       - name: Verify and smoke the core update on the exact base product
         if: matrix.platform == 'macos'
         run: |
@@ -297,6 +301,7 @@ jobs:
           path: |
             ${{ runner.temp }}/core-acceptance/DSH-Portable/data/logs
             ${{ runner.temp }}/core-acceptance/DSH-Portable/data/dsh-home/profiles/web/package.json
+            ${{ runner.temp }}/core-acceptance/DSH-Portable/acceptance
           if-no-files-found: warn
           compression-level: 0
 
