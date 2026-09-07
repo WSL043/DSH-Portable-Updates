@@ -27,6 +27,8 @@ jobs:
     outputs:
       publish: ${{ steps.source.outputs.publish }}
       source_sha: ${{ steps.source.outputs.source_sha }}
+      run_id: ${{ steps.source.outputs.run_id }}
+      lock_file: ${{ steps.source.outputs.lock_file }}
       fingerprint: ${{ steps.source.outputs.fingerprint }}
     steps:
       - name: Resolve the latest accepted DSH-Portable source
@@ -43,18 +45,20 @@ jobs:
           esac
 
           SOURCE_SHA=''
-          while IFS= read -r candidate_sha; do
+          SOURCE_RUN_ID=''
+          while IFS=$'\t' read -r candidate_run_id candidate_sha; do
             VERSION="$(curl --fail --silent --show-error --location --retry 3 \
               "https://raw.githubusercontent.com/WSL043/DSH-Portable/$candidate_sha/package.json" | jq -r .version)"
-            if { [ "$CHANNEL" = stable ] && [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; } || \
-               { [ "$CHANNEL" = candidate ] && [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)\.[1-9][0-9]*$ ]]; }; then
+            if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               SOURCE_SHA="$candidate_sha"
+              SOURCE_RUN_ID="$candidate_run_id"
               break
             fi
           done < <(gh api \
-            'repos/WSL043/DSH-Portable/actions/workflows/ci.yml/runs?status=success&per_page=100' \
-            --jq '.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch") | .head_sha')
+            'repos/WSL043/DSH-Portable/actions/workflows/ci.yml/runs?status=success&branch=main&per_page=100' \
+            --jq '.workflow_runs[] | select(.head_branch == "main" and (.event == "push" or .event == "workflow_dispatch")) | [.id, .head_sha] | @tsv')
           test -n "$SOURCE_SHA" && test "$SOURCE_SHA" != null
+          test -n "$SOURCE_RUN_ID" && test "$SOURCE_RUN_ID" != null
 
           curl --fail --location --retry 3 \
             "https://raw.githubusercontent.com/WSL043/DSH-Portable/$SOURCE_SHA/$LOCK_FILE" \
@@ -62,7 +66,12 @@ jobs:
           curl --fail --location --retry 3 \
             "https://raw.githubusercontent.com/WSL043/DSH-Portable/$SOURCE_SHA/app/package-lock.json" \
             --output app-package-lock.json
-          FINGERPRINT="$(sha256sum upstream-channel.lock.json app-package-lock.json | sha256sum | cut -d' ' -f1)"
+          FINGERPRINT="$(
+            {
+              printf '%s\0' "$SOURCE_SHA"
+              cat upstream-channel.lock.json app-package-lock.json
+            } | sha256sum | cut -d' ' -f1
+          )"
 
           CURRENT="$(curl --silent --show-error --location \
             "https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-$CHANNEL/channel-source.json" \
@@ -70,7 +79,10 @@ jobs:
           CURRENT_FINGERPRINT="$(printf '%s' "$CURRENT" | jq -r '.fingerprint // empty' 2>/dev/null || true)"
 
           echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "lock_file=$LOCK_FILE" >> "$GITHUB_OUTPUT"
           echo "fingerprint=$FINGERPRINT" >> "$GITHUB_OUTPUT"
+          echo "Resolved the latest stable product CI run $SOURCE_RUN_ID at $SOURCE_SHA."
           if [ "${{ inputs.rebuild || false }}" != true ] && [ "$FINGERPRINT" = "$CURRENT_FINGERPRINT" ]; then
             echo 'publish=false' >> "$GITHUB_OUTPUT"
             echo "Verified core is already current at $SOURCE_SHA."
@@ -91,19 +103,18 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24.19.0
-      - name: Resolve the locked preview source
+      - name: Resolve the locked official source
         id: preview
-        if: inputs.channel == 'candidate'
+        env:
+          LOCK_FILE: ${{ needs.resolve.outputs.lock_file }}
         run: |
-          node -e "const lock=require('./upstream.preview.lock.json'); console.log('commit='+lock.dsh.reviewedCommit); console.log('packageManager='+lock.dsh.packageManager)" >> "$GITHUB_OUTPUT"
+          node -e "const fs=require('fs'); const lock=JSON.parse(fs.readFileSync(process.env.LOCK_FILE,'utf8')); console.log('commit='+lock.dsh.reviewedCommit); console.log('packageManager='+lock.dsh.packageManager); for (const family of ['dsh','vendor','landlock']) { const count=lock.dsh.packedFamilies?.[family]; if (!Number.isInteger(count)) throw new Error('Missing packedFamilies.'+family); console.log(family+'Count='+count) }" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
-        if: inputs.channel == 'candidate'
         with:
           repository: deepseek-ai/deepseek-harness
           ref: ${{ steps.preview.outputs.commit }}
           path: upstream
       - name: Build and pack the locked official preview source
-        if: inputs.channel == 'candidate'
         run: |
           test "$(git -C upstream rev-parse HEAD)" = '${{ steps.preview.outputs.commit }}'
           npm install --global '${{ steps.preview.outputs.packageManager }}'
@@ -113,9 +124,9 @@ jobs:
           pnpm --dir upstream run release:pack --family vendor --out dist/npm-vendor --concurrency 8
           mkdir -p upstream/dist/npm-landlock
           pnpm --dir upstream/native/landlock-run/packages/entry pack --pack-destination "$PWD/upstream/dist/npm-landlock"
-      - name: Create a stable-channel marker
-        if: inputs.channel == 'stable'
-        run: mkdir preview-packed && printf 'stable\n' > preview-packed/STABLE
+          test "$(find upstream/dist/npm -maxdepth 1 -name '*.tgz' | wc -l)" -eq "${{ steps.preview.outputs.dshCount }}"
+          test "$(find upstream/dist/npm-vendor -maxdepth 1 -name '*.tgz' | wc -l)" -eq "${{ steps.preview.outputs.vendorCount }}"
+          test "$(find upstream/dist/npm-landlock -maxdepth 1 -name '*.tgz' | wc -l)" -eq "${{ steps.preview.outputs.landlockCount }}"
       - uses: actions/upload-artifact@v7
         with:
           name: preview-packed-${{ inputs.channel }}
@@ -123,8 +134,7 @@ jobs:
             upstream/dist/npm
             upstream/dist/npm-vendor
             upstream/dist/npm-landlock
-            preview-packed/STABLE
-          if-no-files-found: ignore
+          if-no-files-found: error
           compression-level: 0
 
   build:
@@ -165,11 +175,27 @@ jobs:
           node-version: 24.19.0
       - uses: actions/download-artifact@v8
         with:
+          name: ${{ matrix.artifact }}-build
+          repository: WSL043/DSH-Portable
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: baseline-artifacts
+      - uses: actions/download-artifact@v8
+        with:
           name: preview-packed-${{ inputs.channel }}
           path: preview-packed
-      - name: Stage the exact verified preview runtime
-        if: inputs.channel == 'candidate'
-        run: node scripts/stage-preview-runtime.mjs --packed-root preview-packed/upstream/dist --output preview-app
+      - name: Stage the exact verified preview runtime (Windows)
+        if: matrix.platform == 'windows'
+        shell: powershell
+        run: |
+          & node scripts/stage-preview-runtime.mjs `
+            --packed-root preview-packed `
+            --output preview-app `
+            --lock-file '${{ needs.resolve.outputs.lock_file }}'
+          if ($LASTEXITCODE -ne 0) { throw "Windows preview runtime staging failed with exit code $LASTEXITCODE" }
+      - name: Stage the exact verified preview runtime (Unix)
+        if: matrix.platform != 'windows'
+        run: node scripts/stage-preview-runtime.mjs --packed-root preview-packed --output preview-app --lock-file '${{ needs.resolve.outputs.lock_file }}'
       - uses: dtolnay/rust-toolchain@1.88.0
         if: matrix.platform == 'linux'
         with:
@@ -185,34 +211,93 @@ jobs:
         if: matrix.platform == 'windows'
         shell: powershell
         run: |
-          if ('${{ inputs.channel }}' -eq 'candidate') {
-            ./scripts/build-windows.ps1 -PreviewAppSource preview-app
-          } else {
-            ./scripts/build-windows.ps1
-          }
+          & ./scripts/build-windows.ps1 -PreviewAppSource preview-app -CoreOnly -CoreChannel '${{ inputs.channel }}'
+          if ($LASTEXITCODE -ne 0) { throw "Windows core build failed with exit code $LASTEXITCODE" }
       - name: Build macOS core component
         if: matrix.platform == 'macos'
+        env:
+          PREVIEW_APP_SOURCE: ${{ github.workspace }}/preview-app
+          DSH_PORTABLE_CORE_ONLY: '1'
+          DSH_PORTABLE_CORE_CHANNEL: ${{ inputs.channel }}
         run: |
-          if [ '${{ inputs.channel }}' = candidate ]; then
-            PREVIEW_APP_SOURCE="$PWD/preview-app" bash scripts/build-macos.sh "${{ matrix.arch }}"
-          else
-            bash scripts/build-macos.sh "${{ matrix.arch }}"
-          fi
+          bash scripts/build-macos.sh "${{ matrix.arch }}"
       - name: Build Linux core component
         if: matrix.platform == 'linux'
+        env:
+          PREVIEW_APP_SOURCE: ${{ github.workspace }}/preview-app
+          DSH_PORTABLE_CORE_ONLY: '1'
+          DSH_PORTABLE_CORE_CHANNEL: ${{ inputs.channel }}
         run: |
-          if [ '${{ inputs.channel }}' = candidate ]; then
-            PREVIEW_APP_SOURCE="$PWD/preview-app" bash scripts/build-linux.sh "${{ matrix.arch }}"
-          else
-            bash scripts/build-linux.sh "${{ matrix.arch }}"
-          fi
+          bash scripts/build-linux.sh "${{ matrix.arch }}"
+      - name: Verify and smoke the core update on the exact base product
+        if: matrix.platform == 'windows'
+        shell: powershell
+        run: |
+          & node scripts/verify-update-artifact.mjs `
+            "artifacts/dsh-core-update-${{ matrix.artifact }}.json" `
+            "artifacts/DSH-Portable-update-${{ matrix.artifact }}.zip" engine
+          if ($LASTEXITCODE -ne 0) { throw "Windows core artifact verification failed with exit code $LASTEXITCODE" }
+          $AcceptanceRoot = Join-Path $env:RUNNER_TEMP 'core-acceptance'
+          New-Item -ItemType Directory -Path $AcceptanceRoot | Out-Null
+          & tar.exe -x -f (Join-Path $env:GITHUB_WORKSPACE 'baseline-artifacts\DSH-Portable-windows-x64-offline.zip') -C $AcceptanceRoot
+          if ($LASTEXITCODE -ne 0) { throw "Windows base archive extraction failed with exit code $LASTEXITCODE" }
+          $BaselineRoot = Join-Path $AcceptanceRoot 'DSH-Portable'
+          if (-not (Test-Path -LiteralPath $BaselineRoot -PathType Container)) { throw "Windows base root is missing: $BaselineRoot" }
+          & node scripts/smoke-update-artifact.mjs `
+            $BaselineRoot `
+            "artifacts/dsh-core-update-${{ matrix.artifact }}.json" `
+            "artifacts/DSH-Portable-update-${{ matrix.artifact }}.zip"
+          if ($LASTEXITCODE -ne 0) { throw "Windows core update smoke failed with exit code $LASTEXITCODE" }
+      - name: Verify and smoke the core update on the exact base product
+        if: matrix.platform == 'macos'
+        run: |
+          set -euo pipefail
+          node scripts/verify-update-artifact.mjs \
+            "artifacts/dsh-core-update-${{ matrix.artifact }}.json" \
+            "artifacts/DSH-Portable-update-${{ matrix.artifact }}.zip" engine
+          ACCEPTANCE_ROOT="$RUNNER_TEMP/core-acceptance"
+          mkdir "$ACCEPTANCE_ROOT"
+          ditto -x -k "baseline-artifacts/DSH-Portable-macos-${{ matrix.arch }}.zip" "$ACCEPTANCE_ROOT"
+          BASELINE_ROOT="$ACCEPTANCE_ROOT/DSH-Portable"
+          test -d "$BASELINE_ROOT"
+          node scripts/smoke-update-artifact.mjs \
+            "$BASELINE_ROOT" \
+            "artifacts/dsh-core-update-${{ matrix.artifact }}.json" \
+            "artifacts/DSH-Portable-update-${{ matrix.artifact }}.zip"
+      - name: Verify and smoke the core update on the exact base product
+        if: matrix.platform == 'linux'
+        run: |
+          set -euo pipefail
+          node scripts/verify-update-artifact.mjs \
+            "artifacts/dsh-core-update-${{ matrix.artifact }}.json" \
+            "artifacts/DSH-Portable-update-${{ matrix.artifact }}.zip" engine
+          ACCEPTANCE_ROOT="$RUNNER_TEMP/core-acceptance"
+          mkdir "$ACCEPTANCE_ROOT"
+          tar -xzf "baseline-artifacts/DSH-Portable-linux-${{ matrix.arch }}.tar.gz" -C "$ACCEPTANCE_ROOT"
+          BASELINE_ROOT="$ACCEPTANCE_ROOT/DSH-Portable"
+          test -d "$BASELINE_ROOT"
+          node scripts/smoke-update-artifact.mjs \
+            "$BASELINE_ROOT" \
+            "artifacts/dsh-core-update-${{ matrix.artifact }}.json" \
+            "artifacts/DSH-Portable-update-${{ matrix.artifact }}.zip"
       - uses: actions/upload-artifact@v7
+        if: success()
         with:
           name: core-${{ inputs.channel }}-${{ matrix.artifact }}
           path: |
             artifacts/DSH-Portable-update-${{ matrix.artifact }}.zip
             artifacts/dsh-core-update-${{ matrix.artifact }}.json
           if-no-files-found: error
+          compression-level: 0
+      - name: Upload baseline update diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: core-diagnostics-${{ inputs.channel }}-${{ matrix.artifact }}
+          path: |
+            ${{ runner.temp }}/core-acceptance/DSH-Portable/data/logs
+            ${{ runner.temp }}/core-acceptance/DSH-Portable/data/dsh-home/profiles/web/package.json
+          if-no-files-found: warn
           compression-level: 0
 
   publish:
