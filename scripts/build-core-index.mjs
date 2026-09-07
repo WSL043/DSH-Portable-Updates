@@ -32,6 +32,16 @@ function validManifest(manifest, version) {
     })
 }
 
+function compatibleManifest(manifest, currentManifest) {
+  return manifest?.platform === currentManifest?.platform
+    && manifest?.portableVersion === currentManifest?.portableVersion
+    && manifest?.requiredShellSchema === currentManifest?.requiredShellSchema
+    && manifest?.requiredShellFingerprint === currentManifest?.requiredShellFingerprint
+    && manifest?.targetRuntimeLayout === currentManifest?.targetRuntimeLayout
+    && manifest?.component?.requiredNodeVersion === currentManifest?.component?.requiredNodeVersion
+    && manifest?.component?.runtimeLayout === currentManifest?.component?.runtimeLayout
+}
+
 function versionedManifestName(platform, version) {
   return `dsh-core-update-${platform}-${version}.json`
 }
@@ -66,6 +76,7 @@ export async function buildCoreIndex({
     const expectedName = versionedManifestName(platform, version)
     if (!parseVersion(version)
       || !validManifest(candidate?.manifest, version)
+      || !compatibleManifest(candidate.manifest, currentManifest)
       || candidate?.manifestUrl !== `${base}/${expectedName}`) continue
     entries.push(candidate)
   }
@@ -74,7 +85,8 @@ export async function buildCoreIndex({
   if (entries.length === 0
     && previousVersion !== currentVersion
     && parseVersion(previousVersion)
-    && validManifest(previousLatestManifest, previousVersion)) {
+    && validManifest(previousLatestManifest, previousVersion)
+    && compatibleManifest(previousLatestManifest, currentManifest)) {
     manifests.set(previousVersion, previousLatestManifest)
     entries.push({
       version: previousVersion,
@@ -88,10 +100,17 @@ export async function buildCoreIndex({
     manifestUrl: `${base}/${versionedManifestName(platform, currentVersion)}`,
     manifest: currentManifest,
   })
-  const unique = [...new Map(entries.map(entry => [entry.version, entry])).values()]
+  const unique = []
+  const seenVersions = new Set()
+  for (const entry of entries) {
+    if (seenVersions.has(entry.version)) continue
+    seenVersions.add(entry.version)
+    unique.push(entry)
+  }
+  const bounded = unique
     .sort((left, right) => compareVersions(right.version, left.version))
     .slice(0, 5)
-  const index = { schemaVersion: 1, channel, platform, versions: unique }
+  const index = { schemaVersion: 1, channel, platform, versions: bounded }
   const versionedManifestNames = []
   for (const [version, manifest] of manifests) {
     const name = versionedManifestName(platform, version)
