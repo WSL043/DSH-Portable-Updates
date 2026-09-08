@@ -1,7 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { selectCoreRelease } from '../scripts/discover-core-source.mjs'
-import { readFile } from 'node:fs/promises'
+import { discoverCoreSource, selectCoreRelease } from '../scripts/discover-core-source.mjs'
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 const registry = { 'dist-tags': { latest: '0.1.2', alpha: '0.1.3-alpha.2', rc: '0.1.2-rc.2' }, versions: Object.fromEntries(['0.1.2','0.1.2-rc.1','0.1.2-rc.2','0.1.3-alpha.2'].map(v=>[v,{dist:{integrity:'sha512-'+v}}])) }
 test('stable advances to a final release while candidate selects the newest prerelease', () => {
   const current={version:'0.1.2-rc.1',integrity:'sha512-0.1.2-rc.1'}
@@ -23,4 +25,28 @@ test('source packing, platform builds and publication all consume the discovered
   assert.match(workflow, /publish: \$\{\{ steps.discovery.outputs.publish \}\}/)
   assert.match(workflow, /needs: \[resolve, build\]/)
   assert.match(workflow, /publish\/official-core.lock.json --clobber/)
+})
+test('new official candidate is resolved once into an immutable lock without changing Portable source', async t => {
+  const root=await mkdtemp(path.join(os.tmpdir(),'core-discovery-'))
+  await mkdir(path.join(root,'scripts'))
+  await writeFile(path.join(root,'scripts/upstream-source-metadata.mjs'), 'export async function readOfficialSourceMetadata(){return {packageManager:"pnpm@11.7.0",packedFamilies:{dsh:251,vendor:9,landlock:1}}}')
+  const original=JSON.stringify({dsh:{version:'0.1.2-rc.1',npmIntegrity:'sha512-0.1.2-rc.1'},defaultPlugins:{keep:'exact'}})
+  await writeFile(path.join(root,'upstream.preview.lock.json'),original)
+  t.mock.method(globalThis,'fetch',async(url,options)=>{
+    if(url.includes('registry.npmjs.org')){assert.equal(options.headers.authorization,undefined);return Response.json(registry)}
+    if(url.endsWith('official-core.lock.json'))return new Response('',{status:404})
+    if(url.includes('/git/ref/tags/'))return Response.json({object:{type:'commit',sha:'a'.repeat(40)}})
+    if(url.endsWith('/THIRD_PARTY_NOTICES.md'))return new Response('official notices')
+    throw Error('Unexpected request '+url)
+  })
+  const output=path.join(root,'resolved/lock.json')
+  const result=await discoverCoreSource({portableRoot:root,channel:'candidate',output,token:'test-only'})
+  const lock=JSON.parse(await readFile(output,'utf8'))
+  assert.equal(result.version,'0.1.3-alpha.2')
+  assert.equal(lock.dsh.reviewedCommit,'a'.repeat(40))
+  assert.equal(lock.dsh.npmIntegrity,'sha512-0.1.3-alpha.2')
+  assert.equal(lock.dsh.packedFamilies.dsh,251)
+  assert.match(lock.dsh.noticesSha256,/^[a-f0-9]{64}$/)
+  assert.deepEqual(lock.defaultPlugins,{keep:'exact'})
+  assert.equal(await readFile(path.join(root,'upstream.preview.lock.json'),'utf8'),original)
 })
