@@ -11,7 +11,7 @@ function parseVersion(value) {
   return { core: match.slice(1, 4).map(Number), stage: match[4] ?? 'stable', number: Number(match[5] ?? 0) }
 }
 
-function compareVersions(left, right) {
+export function compareVersions(left, right) {
   const a = parseVersion(left)
   const b = parseVersion(right)
   if (!a || !b) return 0

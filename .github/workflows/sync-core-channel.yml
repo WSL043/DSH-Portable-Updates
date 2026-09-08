@@ -25,11 +25,11 @@ jobs:
   resolve:
     runs-on: ubuntu-latest
     outputs:
-      publish: ${{ steps.source.outputs.publish }}
+      publish: ${{ steps.discovery.outputs.publish }}
       source_sha: ${{ steps.source.outputs.source_sha }}
       run_id: ${{ steps.source.outputs.run_id }}
       lock_file: ${{ steps.source.outputs.lock_file }}
-      fingerprint: ${{ steps.source.outputs.fingerprint }}
+      fingerprint: ${{ steps.discovery.outputs.fingerprint }}
     steps:
       - name: Resolve the latest accepted DSH-Portable source
         id: source
@@ -60,16 +60,34 @@ jobs:
           test -n "$SOURCE_SHA" && test "$SOURCE_SHA" != null
           test -n "$SOURCE_RUN_ID" && test "$SOURCE_RUN_ID" != null
 
-          curl --fail --location --retry 3 \
-            "https://raw.githubusercontent.com/WSL043/DSH-Portable/$SOURCE_SHA/$LOCK_FILE" \
-            --output upstream-channel.lock.json
-          curl --fail --location --retry 3 \
-            "https://raw.githubusercontent.com/WSL043/DSH-Portable/$SOURCE_SHA/app/package-lock.json" \
-            --output app-package-lock.json
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "lock_file=$LOCK_FILE" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          path: update-channel
+      - uses: actions/checkout@v7
+        with:
+          repository: WSL043/DSH-Portable
+          ref: ${{ steps.source.outputs.source_sha }}
+          path: portable-source
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.19.0
+      - name: Discover and lock the newest official core release
+        id: discovery
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ inputs.channel }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          node --test update-channel/tests/*.test.mjs
+          node update-channel/scripts/discover-core-source.mjs portable-source "$CHANNEL" resolved-core/lock.json
           FINGERPRINT="$(
             {
               printf '%s\0' "$SOURCE_SHA"
-              cat upstream-channel.lock.json app-package-lock.json
+              cat resolved-core/lock.json portable-source/app/package-lock.json
             } | sha256sum | cut -d' ' -f1
           )"
 
@@ -78,11 +96,7 @@ jobs:
             2>/dev/null || true)"
           CURRENT_FINGERPRINT="$(printf '%s' "$CURRENT" | jq -r '.fingerprint // empty' 2>/dev/null || true)"
 
-          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
-          echo "run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
-          echo "lock_file=$LOCK_FILE" >> "$GITHUB_OUTPUT"
           echo "fingerprint=$FINGERPRINT" >> "$GITHUB_OUTPUT"
-          echo "Resolved the latest stable product CI run $SOURCE_RUN_ID at $SOURCE_SHA."
           if [ "${{ inputs.rebuild || false }}" != true ] && [ "$FINGERPRINT" = "$CURRENT_FINGERPRINT" ]; then
             echo 'publish=false' >> "$GITHUB_OUTPUT"
             echo "Verified core is already current at $SOURCE_SHA."
@@ -90,6 +104,11 @@ jobs:
             echo 'publish=true' >> "$GITHUB_OUTPUT"
             echo "A verified core build is required for $SOURCE_SHA."
           fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: resolved-core-${{ inputs.channel }}
+          path: resolved-core/lock.json
+          if-no-files-found: error
 
   preview-runtime:
     needs: resolve
@@ -100,6 +119,15 @@ jobs:
         with:
           repository: WSL043/DSH-Portable
           ref: ${{ needs.resolve.outputs.source_sha }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: resolved-core-${{ inputs.channel }}
+          path: resolved-core
+      - name: Apply the exact discovered official source lock
+        shell: bash
+        env:
+          LOCK_FILE: ${{ needs.resolve.outputs.lock_file }}
+        run: cp resolved-core/lock.json "$LOCK_FILE"
       - uses: actions/setup-node@v7
         with:
           node-version: 24.19.0
@@ -170,6 +198,15 @@ jobs:
         with:
           repository: WSL043/DSH-Portable
           ref: ${{ needs.resolve.outputs.source_sha }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: resolved-core-${{ inputs.channel }}
+          path: resolved-core
+      - name: Apply the exact discovered official source lock
+        shell: bash
+        env:
+          LOCK_FILE: ${{ needs.resolve.outputs.lock_file }}
+        run: cp resolved-core/lock.json "$LOCK_FILE"
       - uses: actions/setup-node@v7
         with:
           node-version: 24.19.0
@@ -313,6 +350,15 @@ jobs:
         with:
           repository: WSL043/DSH-Portable
           ref: ${{ needs.resolve.outputs.source_sha }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: resolved-core-${{ inputs.channel }}
+          path: resolved-core
+      - name: Apply the exact discovered official source lock
+        shell: bash
+        env:
+          LOCK_FILE: ${{ needs.resolve.outputs.lock_file }}
+        run: cp resolved-core/lock.json "$LOCK_FILE"
       - uses: actions/checkout@v7
         with:
           repository: WSL043/DSH-Portable-Updates
@@ -365,6 +411,7 @@ jobs:
               "$CHANNEL" "$platform" "publish/dsh-core-update-${platform}.json" \
               "$PREVIOUS_INDEX" "$PREVIOUS" publish
           done
+          cp resolved-core/lock.json publish/official-core.lock.json
           jq -n \
             --arg channel "$CHANNEL" \
             --arg sourceSha "$SOURCE_SHA" \
@@ -384,7 +431,7 @@ jobs:
               --title "Verified DeepSeek Harness core $CHANNEL channel" \
               --notes "Machine-readable $CHANNEL update assets used by DSH-Portable."
           gh release upload "$TAG" --repo WSL043/DSH-Portable-Updates publish/*.zip --clobber
-          gh release upload "$TAG" --repo WSL043/DSH-Portable-Updates publish/dsh-core-update-*.json publish/dsh-core-index-*.json publish/channel-source.json --clobber
+          gh release upload "$TAG" --repo WSL043/DSH-Portable-Updates publish/dsh-core-update-*.json publish/dsh-core-index-*.json publish/channel-source.json publish/official-core.lock.json --clobber
       - name: Keep only archives referenced by the bounded version catalogs
         env:
           CHANNEL: ${{ inputs.channel }}
