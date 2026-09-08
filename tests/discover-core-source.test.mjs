@@ -19,6 +19,31 @@ test('changed or missing integrity fails before staging', () => {
   assert.throws(()=>selectCoreRelease(registry,'stable',{version:'0.1.2',integrity:'wrong'}),/integrity changed/)
   assert.throws(()=>selectCoreRelease({...registry,versions:{}},'candidate',{version:'0.1.2-rc.1'}),/no integrity/)
 })
+
+test('accepted-only refresh retains integrity checks without selecting newer upstream tags', () => {
+  const current = {version:'0.1.2-rc.1',npmIntegrity:'sha512-0.1.2-rc.1'}
+  assert.equal(selectCoreRelease(registry,'candidate',current,true).version,current.version)
+  assert.throws(()=>selectCoreRelease(registry,'candidate',{...current,npmIntegrity:'changed'},true),/integrity changed/)
+})
+
+test('accepted-only refresh preserves the published immutable core when newer source is incompatible', async t => {
+  const root=await mkdtemp(path.join(os.tmpdir(),'core-accepted-refresh-'))
+  const published={version:'0.1.3-alpha.2',npmIntegrity:'sha512-0.1.3-alpha.2',reviewedCommit:'b'.repeat(40),packedFamilies:{dsh:251,vendor:9,landlock:1}}
+  const original=JSON.stringify({dsh:{version:'0.1.2-rc.1',npmIntegrity:'sha512-0.1.2-rc.1'},defaultPlugins:{keep:'current-shell'}})
+  await writeFile(path.join(root,'upstream.preview.lock.json'),original)
+  t.mock.method(globalThis,'fetch',async url=>{
+    if(url.includes('registry.npmjs.org'))return Response.json({...registry,'dist-tags':{alpha:'0.1.5-alpha.1'}})
+    if(url.endsWith('official-core.lock.json'))return Response.json({dsh:published})
+    throw Error('Accepted-only must not fetch new upstream source: '+url)
+  })
+  const output=path.join(root,'resolved/lock.json')
+  const result=await discoverCoreSource({portableRoot:root,channel:'candidate',output,acceptedOnly:true})
+  const lock=JSON.parse(await readFile(output,'utf8'))
+  assert.equal(result.acceptedOnly,true)
+  assert.deepEqual(lock.dsh,published)
+  assert.deepEqual(lock.defaultPlugins,{keep:'current-shell'})
+  assert.equal(await readFile(path.join(root,'upstream.preview.lock.json'),'utf8'),original)
+})
 test('source packing, platform builds and publication all consume the discovered lock', async () => {
   const workflow = await readFile(new URL('../.github/workflows/sync-core-channel.yml', import.meta.url), 'utf8')
   assert.equal(workflow.split('run: cp resolved-core/lock.json "$LOCK_FILE"').length - 1, 3)

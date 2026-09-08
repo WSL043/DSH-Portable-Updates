@@ -4,10 +4,10 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { compareVersions } from './build-core-index.mjs'
 
-export function selectCoreRelease(registry, channel, current) {
+export function selectCoreRelease(registry, channel, current, acceptedOnly = false) {
   if (!['stable', 'candidate'].includes(channel)) throw new Error('Unknown core channel')
   const tags = registry?.['dist-tags'] || {}
-  const allowed = channel === 'stable' ? ['latest'] : ['alpha', 'beta', 'rc', 'next', 'latest']
+  const allowed = acceptedOnly ? [] : channel === 'stable' ? ['latest'] : ['alpha', 'beta', 'rc', 'next', 'latest']
   const pattern = channel === 'stable' ? /^\d+\.\d+\.\d+$/ : /^\d+\.\d+\.\d+-(alpha|beta|rc)\.[1-9]\d*$/
   let version = current.version
   for (const tag of allowed) {
@@ -21,7 +21,7 @@ export function selectCoreRelease(registry, channel, current) {
   return { version, integrity }
 }
 
-export async function discoverCoreSource({ portableRoot, channel, output, token = process.env.GITHUB_TOKEN }) {
+export async function discoverCoreSource({ portableRoot, channel, output, token = process.env.GITHUB_TOKEN, acceptedOnly = process.env.ACCEPTED_CORE_ONLY === 'true' }) {
   const lockFile = channel === 'stable' ? 'upstream.lock.json' : 'upstream.preview.lock.json'
   const lock = JSON.parse(await readFile(path.join(portableRoot, lockFile), 'utf8'))
   async function get(url, json = true, optional = false) {
@@ -36,7 +36,7 @@ export async function discoverCoreSource({ portableRoot, channel, output, token 
   const registry = await get('https://registry.npmjs.org/@deepseek-ai%2Fdsh')
   const accepted = await get(`https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-${channel}/official-core.lock.json`, true, true)
   if (accepted?.dsh && compareVersions(accepted.dsh.version, lock.dsh.version) > 0) lock.dsh = accepted.dsh
-  const selected = selectCoreRelease(registry, channel, lock.dsh)
+  const selected = selectCoreRelease(registry, channel, lock.dsh, acceptedOnly)
   if (selected.version !== lock.dsh.version) {
     let object = (await get(`https://api.github.com/repos/deepseek-ai/deepseek-harness/git/ref/tags/dsh-v${selected.version}`)).object
     if (object?.type === 'tag') object = (await get(`https://api.github.com/repos/deepseek-ai/deepseek-harness/git/tags/${object.sha}`)).object
@@ -50,7 +50,7 @@ export async function discoverCoreSource({ portableRoot, channel, output, token 
   }
   await mkdir(path.dirname(output), { recursive: true })
   await writeFile(output, JSON.stringify(lock, null, 2) + '\n')
-  return { version: lock.dsh.version, commit: lock.dsh.reviewedCommit, lockFile }
+  return { version: lock.dsh.version, commit: lock.dsh.reviewedCommit, lockFile, acceptedOnly }
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
