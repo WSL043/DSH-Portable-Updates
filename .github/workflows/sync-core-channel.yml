@@ -3,6 +3,11 @@ name: Sync one verified DSH core channel
 on:
   workflow_call:
     inputs:
+      accepted_only:
+        description: Requalify the already accepted core without upstream version discovery
+        required: false
+        type: boolean
+        default: false
       channel:
         description: Accepted Portable release channel to resolve and publish
         required: true
@@ -80,6 +85,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           CHANNEL: ${{ inputs.channel }}
           SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          ACCEPTED_CORE_ONLY: ${{ inputs.accepted_only || false }}
         run: |
           set -euo pipefail
           node --test update-channel/tests/*.test.mjs

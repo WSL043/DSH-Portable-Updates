@@ -5,6 +5,11 @@ on:
     - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
+      accepted_only:
+        description: Requalify the already accepted core for the latest verified shell without discovering a new upstream version
+        required: false
+        type: boolean
+        default: false
       rebuild:
         description: Rebuild both accepted channels even when their dependency fingerprints are unchanged
         required: false
@@ -20,6 +25,7 @@ jobs:
     uses: ./.github/workflows/sync-core-channel.yml
     with:
       channel: stable
+      accepted_only: ${{ inputs.accepted_only || false }}
       rebuild: ${{ inputs.rebuild || false }}
     secrets: inherit
 
@@ -27,5 +33,6 @@ jobs:
     uses: ./.github/workflows/sync-core-channel.yml
     with:
       channel: candidate
+      accepted_only: ${{ inputs.accepted_only || false }}
       rebuild: ${{ inputs.rebuild || false }}
     secrets: inherit
