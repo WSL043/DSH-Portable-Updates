@@ -21,7 +21,7 @@ export function selectCoreRelease(registry, channel, current, acceptedOnly = fal
   return { version, integrity }
 }
 
-export async function discoverCoreSource({ portableRoot, channel, output, token = process.env.GITHUB_TOKEN, acceptedOnly = process.env.ACCEPTED_CORE_ONLY === 'true' }) {
+export async function discoverCoreSource({ portableRoot, channel, output, token = process.env.GITHUB_TOKEN, acceptedOnly = false }) {
   const lockFile = channel === 'stable' ? 'upstream.lock.json' : 'upstream.preview.lock.json'
   const lock = JSON.parse(await readFile(path.join(portableRoot, lockFile), 'utf8'))
   async function get(url, json = true, optional = false) {
@@ -55,5 +55,5 @@ export async function discoverCoreSource({ portableRoot, channel, output, token 
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
   const [portableRoot, channel, output] = process.argv.slice(2)
-  console.log(JSON.stringify(await discoverCoreSource({ portableRoot, channel, output })))
+  console.log(JSON.stringify(await discoverCoreSource({ portableRoot, channel, output, acceptedOnly: process.env.ACCEPTED_CORE_ONLY === 'true' })))
 }
