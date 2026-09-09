@@ -109,7 +109,7 @@ export async function buildCoreIndex({
   }
   const bounded = unique
     .sort((left, right) => compareVersions(right.version, left.version))
-    .slice(0, 5)
+    .slice(0, 20)
   const index = { schemaVersion: 1, channel, platform, versions: bounded }
   const versionedManifestNames = []
   for (const [version, manifest] of manifests) {
