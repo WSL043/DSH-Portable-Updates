@@ -36,7 +36,7 @@ jobs:
       source_sha: ${{ steps.source.outputs.source_sha }}
       run_id: ${{ steps.source.outputs.run_id }}
       lock_file: ${{ steps.source.outputs.lock_file }}
-      fingerprint: ${{ steps.discovery.outputs.fingerprint }}
+      fingerprint: ${{ steps.plan.outputs.fingerprint }}
     steps:
       - name: Initialize selection record
         env:
@@ -106,12 +106,29 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           CHANNEL: ${{ inputs.channel }}
           SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          PIPELINE_SHA: ${{ github.sha }}
           ACCEPTED_CORE_ONLY: ${{ inputs.accepted_only || false }}
           REBUILD_CORE: ${{ inputs.rebuild || false }}
         run: |
           set -euo pipefail
           node --test update-channel/tests/*.test.mjs
           node update-channel/scripts/discover-core-source.mjs portable-source "$CHANNEL" resolved-core/lock.json selection.json
+          echo "commit=$(jq -r '.dsh.reviewedCommit' resolved-core/lock.json)" >> "$GITHUB_OUTPUT"
+          echo "publish=$(jq -r '.publish' selection.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        if: steps.discovery.outputs.publish == 'true'
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: ${{ steps.discovery.outputs.commit }}
+          path: official-plan
+      - name: Resolve the official publishable package membership
+        id: plan
+        if: steps.discovery.outputs.publish == 'true'
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          node update-channel/scripts/resolve-packed-members.mjs official-plan resolved-core/lock.json
           FINGERPRINT="$(
             {
               printf '%s\0' "$SOURCE_SHA"
@@ -141,7 +158,7 @@ jobs:
         if: always()
         with:
           name: resolved-core-${{ inputs.channel }}
-          path: resolved-core/lock.json
+          path: resolved-core/
           if-no-files-found: warn
 
   preview-runtime:
@@ -574,6 +591,7 @@ jobs:
           PUBLISH_REQUIRED: ${{ needs.resolve.outputs.publish }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+          PIPELINE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           mkdir -p state
@@ -609,5 +627,5 @@ jobs:
           gh release download "$TAG" --repo WSL043/DSH-Portable-Updates \
             --pattern qualification-state.json --dir state --clobber || printf '[]\n' > state/qualification-state.json
           node update-channel/scripts/update-qualification-state.mjs \
-            state/qualification-state.json "$SOURCE_SHA" "$VERSION" "$STATUS" "$ATTEMPTED_AT" "$RETRY_AFTER"
+            state/qualification-state.json "$SOURCE_SHA" "$VERSION" "$STATUS" "$ATTEMPTED_AT" "$RETRY_AFTER" "$PIPELINE_SHA"
           gh release upload "$TAG" --repo WSL043/DSH-Portable-Updates state/qualification-state.json --clobber

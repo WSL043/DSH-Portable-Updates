@@ -26,9 +26,14 @@ behavior. Publishing an official core must not create a Portable release.
    compatibility baseline.
 2. Discover official registry versions, not only moving dist-tags. Keep registry
    integrity and immutable upstream source provenance for each selected version.
+   Derive publishable members from the official release planner in that exact
+   checkout, including its private-package exclusions; never count directories
+   or maintain per-version package-count exceptions.
 3. Qualify one missing version per channel run, newest first, then backfill the
    retained supported window. Record failed attempts with a cooldown so a broken
    newest version does not prevent an older missing version from being tested.
+   A corrected intake-pipeline revision retries failed versions immediately;
+   already qualified versions do not need rebuilding for a pipeline-only change.
 4. Run the existing five-platform installation, startup, plugin preservation and
    rollback gates. Publish only successful component archives and catalogs.
 5. Preserve the newest qualified default when adding an older version. A user
@@ -63,7 +68,9 @@ that work; removing the fingerprint check alone would not establish such an ABI.
 
 Prefer official public entry points and installable registry artifacts. Source
 package layout is a packaging detail, not a compatibility API. The current
-source-pack pipeline still depends on upstream release-family declarations;
+source-pack pipeline calls the upstream release-family planner. Its adapter lives
+in this update repository, so a packaging-only correction does not require a new
+Portable desktop release. It still depends on the upstream planner interface;
 moving to verified official registry dependency closures is a separate packaging
 change requiring byte/provenance, native dependency, update and rollback checks.
 It should replace the existing path after qualification, rather than add another
