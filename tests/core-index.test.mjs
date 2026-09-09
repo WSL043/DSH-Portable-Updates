@@ -13,6 +13,10 @@ test('the reusable publisher checks out and tests its own catalog implementation
   assert.match(workflow, /node update-channel\/scripts\/build-core-index\.mjs/)
   assert.match(workflow, /publish\/dsh-core-index-\*\.json/)
   assert.match(workflow, /versions\[\]\.manifestUrl/)
+  assert.match(workflow, /releases\/latest/)
+  assert.match(workflow, /CURRENT_IS_HIGHEST|TOP_VERSION/)
+  assert.match(workflow, /publish\/official-core-\$\{SELECTED_VERSION\}\.lock\.json/)
+  assert.match(workflow, /qualification-state:/)
 })
 
 function manifest(version, archive = version, platform = 'windows-x64', {
@@ -142,10 +146,10 @@ test('catalog removes prior DSH versions with incompatible Portable requirements
   assert.deepEqual(result.index.versions.map(entry => entry.version), ['0.1.2-rc.1'])
 })
 
-test('catalog updates stay newest-first, unique, and bounded to five versions', async (t) => {
+test('catalog updates stay newest-first, unique, and bounded to twenty versions', async (t) => {
   const output = await mkdtemp(path.join(os.tmpdir(), 'dsh-core-index-'))
   t.after(() => rm(output, { recursive: true, force: true }))
-  const previousVersions = ['0.1.2-beta.4', '0.1.2-beta.3', '0.1.2-beta.2', '0.1.2-beta.1', '0.1.2-alpha.9']
+  const previousVersions = Array.from({length:24}, (_, index) => `0.1.2-beta.${24 - index}`)
   const previousIndex = {
     schemaVersion: 1,
     versions: previousVersions.map(version => ({
@@ -165,9 +169,30 @@ test('catalog updates stay newest-first, unique, and bounded to five versions', 
   })
 
   assert.deepEqual(result.index.versions.map(entry => entry.version), [
-    '0.1.2-rc.1', '0.1.2-beta.4', '0.1.2-beta.3', '0.1.2-beta.2', '0.1.2-beta.1',
+    '0.1.2-rc.1', ...previousVersions.slice(0, 19),
   ])
-  assert.equal(new Set(result.index.versions.map(entry => entry.version)).size, 5)
+  assert.equal(new Set(result.index.versions.map(entry => entry.version)).size, 20)
+})
+
+test('historical backfill keeps a higher accepted version at the catalog head', async (t) => {
+  const output = await mkdtemp(path.join(os.tmpdir(), 'dsh-core-index-'))
+  t.after(() => rm(output, { recursive: true, force: true }))
+  const currentManifest = manifest('0.1.2-alpha.1', 'current', 'linux-x64')
+  const previousManifest = manifest('0.1.2-rc.1', 'previous', 'linux-x64')
+  const previousIndex = {
+    schemaVersion: 1,
+    versions: [{
+      version: '0.1.2-rc.1',
+      manifestUrl: 'https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-candidate/dsh-core-update-linux-x64-0.1.2-rc.1.json',
+      manifest: previousManifest,
+    }],
+  }
+  const result = await buildCoreIndex({
+    channel:'candidate', platform:'linux-x64', currentManifest, previousIndex,
+    previousLatestManifest:previousManifest, output,
+  })
+  assert.deepEqual(result.index.versions.map(entry => entry.version), ['0.1.2-rc.1', '0.1.2-alpha.1'])
+  assert.equal(result.index.versions[0].manifest, previousManifest)
 })
 
 test('invalid prior catalog entries cannot inject untrusted manifests', async (t) => {

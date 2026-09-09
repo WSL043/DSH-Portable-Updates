@@ -30,13 +30,23 @@ jobs:
   resolve:
     runs-on: ubuntu-latest
     outputs:
-      publish: ${{ steps.discovery.outputs.publish }}
+      publish: ${{ steps.selection.outputs.publish }}
+      version: ${{ steps.selection.outputs.version }}
+      selection_status: ${{ steps.selection.outputs.status }}
       source_sha: ${{ steps.source.outputs.source_sha }}
       run_id: ${{ steps.source.outputs.run_id }}
       lock_file: ${{ steps.source.outputs.lock_file }}
       fingerprint: ${{ steps.discovery.outputs.fingerprint }}
     steps:
-      - name: Resolve the latest accepted DSH-Portable source
+      - name: Initialize selection record
+        env:
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          cat > selection.json <<EOF
+          {"schemaVersion":1,"channel":"$CHANNEL","sourceSha":null,"version":null,"publish":false,"status":"unresolved","attemptedAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+          EOF
+      - name: Resolve the current stable DSH-Portable release
         id: source
         env:
           GH_TOKEN: ${{ github.token }}
@@ -49,25 +59,36 @@ jobs:
             *) echo "Unsupported channel: $CHANNEL" >&2; exit 1 ;;
           esac
 
-          SOURCE_SHA=''
-          SOURCE_RUN_ID=''
-          while IFS=$'\t' read -r candidate_run_id candidate_sha; do
-            VERSION="$(curl --fail --silent --show-error --location --retry 3 \
-              "https://raw.githubusercontent.com/WSL043/DSH-Portable/$candidate_sha/package.json" | jq -r .version)"
-            if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              SOURCE_SHA="$candidate_sha"
-              SOURCE_RUN_ID="$candidate_run_id"
-              break
-            fi
-          done < <(gh api \
-            'repos/WSL043/DSH-Portable/actions/workflows/ci.yml/runs?status=success&branch=main&per_page=100' \
-            --jq '.workflow_runs[] | select(.head_branch == "main" and (.event == "push" or .event == "workflow_dispatch")) | [.id, .head_sha] | @tsv')
+          RELEASE_JSON="$(gh api repos/WSL043/DSH-Portable/releases/latest)"
+          RELEASE_TAG="$(jq -r '.tag_name // empty' <<<"$RELEASE_JSON")"
+          test -n "$RELEASE_TAG"
+          TAG_REF="$(gh api "repos/WSL043/DSH-Portable/git/ref/tags/$RELEASE_TAG")"
+          TAG_TYPE="$(jq -r '.object.type // empty' <<<"$TAG_REF")"
+          TAG_SHA="$(jq -r '.object.sha // empty' <<<"$TAG_REF")"
+          case "$TAG_TYPE" in
+            commit) SOURCE_SHA="$TAG_SHA" ;;
+            tag)
+              TAG_OBJECT="$(gh api "repos/WSL043/DSH-Portable/git/tags/$TAG_SHA")"
+              test "$(jq -r '.object.type // empty' <<<"$TAG_OBJECT")" = commit
+              SOURCE_SHA="$(jq -r '.object.sha // empty' <<<"$TAG_OBJECT")"
+              ;;
+            *) echo "Stable release tag does not resolve to a commit: $RELEASE_TAG ($TAG_TYPE)" >&2; exit 1 ;;
+          esac
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+
+          CI_RUNS="$(gh api "repos/WSL043/DSH-Portable/actions/workflows/ci.yml/runs?status=success&branch=main&head_sha=$SOURCE_SHA&per_page=100")"
+          SOURCE_RUN_ID="$(jq -r '[.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch")] | first | .id // empty' <<<"$CI_RUNS")"
           test -n "$SOURCE_SHA" && test "$SOURCE_SHA" != null
           test -n "$SOURCE_RUN_ID" && test "$SOURCE_RUN_ID" != null
+          SOURCE_VERSION="$(curl --fail --silent --show-error --location --retry 3 \
+            "https://raw.githubusercontent.com/WSL043/DSH-Portable/$SOURCE_SHA/package.json" | jq -r .version)"
+          [[ "$SOURCE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
 
           echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
           echo "run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
           echo "lock_file=$LOCK_FILE" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "source_version=$SOURCE_VERSION" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
         with:
           path: update-channel
@@ -86,10 +107,11 @@ jobs:
           CHANNEL: ${{ inputs.channel }}
           SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
           ACCEPTED_CORE_ONLY: ${{ inputs.accepted_only || false }}
+          REBUILD_CORE: ${{ inputs.rebuild || false }}
         run: |
           set -euo pipefail
           node --test update-channel/tests/*.test.mjs
-          node update-channel/scripts/discover-core-source.mjs portable-source "$CHANNEL" resolved-core/lock.json
+          node update-channel/scripts/discover-core-source.mjs portable-source "$CHANNEL" resolved-core/lock.json selection.json
           FINGERPRINT="$(
             {
               printf '%s\0' "$SOURCE_SHA"
@@ -97,28 +119,34 @@ jobs:
             } | sha256sum | cut -d' ' -f1
           )"
 
-          CURRENT="$(curl --silent --show-error --location \
-            "https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-$CHANNEL/channel-source.json" \
-            2>/dev/null || true)"
-          CURRENT_FINGERPRINT="$(printf '%s' "$CURRENT" | jq -r '.fingerprint // empty' 2>/dev/null || true)"
-
           echo "fingerprint=$FINGERPRINT" >> "$GITHUB_OUTPUT"
-          if [ "${{ inputs.rebuild || false }}" != true ] && [ "$FINGERPRINT" = "$CURRENT_FINGERPRINT" ]; then
-            echo 'publish=false' >> "$GITHUB_OUTPUT"
-            echo "Verified core is already current at $SOURCE_SHA."
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: resolved-selection-${{ inputs.channel }}
+          path: selection.json
+          if-no-files-found: warn
+      - name: Expose selection
+        id: selection
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f selection.json ]]; then
+            jq -r '"version=" + (.version // ""), "publish=" + ((.publish // false) | tostring), "status=" + (.status // "unknown")' selection.json >> "$GITHUB_OUTPUT"
           else
-            echo 'publish=true' >> "$GITHUB_OUTPUT"
-            echo "A verified core build is required for $SOURCE_SHA."
+            printf 'version=\npublish=false\nstatus=unresolved\n' >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: resolved-core-${{ inputs.channel }}
           path: resolved-core/lock.json
-          if-no-files-found: error
+          if-no-files-found: warn
 
   preview-runtime:
     needs: resolve
-    if: needs.resolve.outputs.publish == 'true'
+    if: needs.resolve.result == 'success' && needs.resolve.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -156,8 +184,14 @@ jobs:
           pnpm --dir upstream run build:official
           pnpm --dir upstream run release:pack --family dsh --out dist/npm --concurrency 8
           pnpm --dir upstream run release:pack --family vendor --out dist/npm-vendor --concurrency 8
-          mkdir -p upstream/dist/npm-landlock
-          pnpm --dir upstream/native/landlock-run/packages/entry pack --pack-destination "$PWD/upstream/dist/npm-landlock"
+          case "${{ steps.preview.outputs.landlockCount }}" in
+            0) mkdir -p upstream/dist/npm-landlock ;;
+            1)
+              mkdir -p upstream/dist/npm-landlock
+              pnpm --dir upstream/native/landlock-run/packages/entry pack --pack-destination "$PWD/upstream/dist/npm-landlock"
+              ;;
+            *) echo "Unsupported landlock package count: ${{ steps.preview.outputs.landlockCount }}" >&2; exit 1 ;;
+          esac
           test "$(find upstream/dist/npm -maxdepth 1 -name '*.tgz' | wc -l)" -eq "${{ steps.preview.outputs.dshCount }}"
           test "$(find upstream/dist/npm-vendor -maxdepth 1 -name '*.tgz' | wc -l)" -eq "${{ steps.preview.outputs.vendorCount }}"
           test "$(find upstream/dist/npm-landlock -maxdepth 1 -name '*.tgz' | wc -l)" -eq "${{ steps.preview.outputs.landlockCount }}"
@@ -173,7 +207,7 @@ jobs:
 
   build:
     needs: [resolve, preview-runtime]
-    if: needs.resolve.outputs.publish == 'true'
+    if: needs.resolve.result == 'success' && needs.resolve.outputs.publish == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -350,6 +384,7 @@ jobs:
 
   publish:
     needs: [resolve, build]
+    if: needs.resolve.result == 'success' && needs.resolve.outputs.publish == 'true' && needs.build.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -385,9 +420,23 @@ jobs:
           CHANNEL: ${{ inputs.channel }}
           SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           FINGERPRINT: ${{ needs.resolve.outputs.fingerprint }}
+          SELECTED_VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
-          mkdir -p publish previous
+          test -n "$SELECTED_VERSION"
+          mkdir -p publish previous current
+          SEMVER='^[0-9]+\.[0-9]+\.[0-9]+(-((alpha|beta|rc)\.[0-9]+))?$'
+          version_gte() {
+            node --input-type=module -e 'import { compareVersions } from "./update-channel/scripts/build-core-index.mjs"; process.exit(compareVersions(process.argv[1], process.argv[2]) >= 0 ? 0 : 1)' "$1" "$2"
+          }
+          PREVIOUS_HIGHEST=''
+          for asset in official-core.lock.json channel-source.json; do
+            rm -f "previous/$asset"
+            curl --fail --silent --show-error --location \
+              "https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-$CHANNEL/$asset" \
+              --output "previous/$asset" || rm -f "previous/$asset"
+          done
+          KEEP_PREVIOUS_LATEST=false
           for platform in windows-x64 macos-arm64 macos-x64 linux-x64 linux-arm64; do
             MANIFEST="artifacts/dsh-core-update-${platform}.json"
             ZIP="artifacts/DSH-Portable-update-${platform}.zip"
@@ -405,26 +454,63 @@ jobs:
               --output "$PREVIOUS_INDEX"; then
               rm -f "$PREVIOUS_INDEX"
             fi
+            if [[ -s "$PREVIOUS_INDEX" ]]; then
+              for candidate in $(jq -r '.versions[]?.version // empty' "$PREVIOUS_INDEX"); do
+                if [[ "$candidate" =~ $SEMVER ]] && { [[ -z "$PREVIOUS_HIGHEST" ]] || version_gte "$candidate" "$PREVIOUS_HIGHEST"; }; then
+                  PREVIOUS_HIGHEST="$candidate"
+                fi
+              done
+            fi
+            if [[ -s "$PREVIOUS" ]]; then
+              candidate="$(jq -r '.component.dshVersion // empty' "$PREVIOUS")"
+              if [[ "$candidate" =~ $SEMVER ]] && { [[ -z "$PREVIOUS_HIGHEST" ]] || version_gte "$candidate" "$PREVIOUS_HIGHEST"; }; then
+                PREVIOUS_HIGHEST="$candidate"
+              fi
+            fi
 
             HASH="$(sha256sum "$ZIP" | cut -d' ' -f1)"
             VERSION="$(jq -jr '.component.dshVersion' "$MANIFEST" | tr -c 'A-Za-z0-9._-' '-')"
+            test "$VERSION" = "$SELECTED_VERSION"
             PUBLISHED_ZIP="DSH-Portable-update-${platform}-${VERSION}-${HASH:0:12}.zip"
             cp "$ZIP" "publish/$PUBLISHED_ZIP"
             URL="https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-$CHANNEL/$PUBLISHED_ZIP"
             jq --arg url "$URL" '.component.urls = [$url]' "$MANIFEST" \
-              > "publish/dsh-core-update-${platform}.json"
+              > "current/dsh-core-update-${platform}.json"
             node update-channel/scripts/build-core-index.mjs \
-              "$CHANNEL" "$platform" "publish/dsh-core-update-${platform}.json" \
+              "$CHANNEL" "$platform" "current/dsh-core-update-${platform}.json" \
               "$PREVIOUS_INDEX" "$PREVIOUS" publish
           done
-          cp resolved-core/lock.json publish/official-core.lock.json
+          for platform in windows-x64 macos-arm64 macos-x64 linux-x64 linux-arm64; do
+            TOP_VERSION="$(jq -r '.versions[0].version // empty' "publish/dsh-core-index-${platform}.json")"
+            if [[ -z "$PREVIOUS_HIGHEST" ]]; then
+              cp "current/dsh-core-update-${platform}.json" "publish/dsh-core-update-${platform}.json"
+            elif [[ "$TOP_VERSION" = "$VERSION" ]] && version_gte "$VERSION" "$PREVIOUS_HIGHEST"; then
+              cp "current/dsh-core-update-${platform}.json" "publish/dsh-core-update-${platform}.json"
+            else
+              KEEP_PREVIOUS_LATEST=true
+              PREVIOUS="previous/dsh-core-update-${platform}.json"
+              test -s "$PREVIOUS"
+              cp "$PREVIOUS" "publish/dsh-core-update-${platform}.json"
+            fi
+          done
+          cp resolved-core/lock.json "publish/official-core-${SELECTED_VERSION}.lock.json"
           jq -n \
             --arg channel "$CHANNEL" \
+            --arg version "$SELECTED_VERSION" \
             --arg sourceSha "$SOURCE_SHA" \
             --arg fingerprint "$FINGERPRINT" \
             --arg publishedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            '{schemaVersion:1, channel:$channel, sourceRepository:"WSL043/DSH-Portable", sourceSha:$sourceSha, fingerprint:$fingerprint, publishedAt:$publishedAt}' \
-            > publish/channel-source.json
+            '{schemaVersion:1, channel:$channel, version:$version, sourceRepository:"WSL043/DSH-Portable", sourceSha:$sourceSha, fingerprint:$fingerprint, publishedAt:$publishedAt}' \
+            > "publish/qualification-source-${SELECTED_VERSION}.json"
+          if [ "$KEEP_PREVIOUS_LATEST" = true ]; then
+            test -s previous/official-core.lock.json
+            test -s previous/channel-source.json
+            cp previous/official-core.lock.json publish/official-core.lock.json
+            cp previous/channel-source.json publish/channel-source.json
+          else
+            cp resolved-core/lock.json publish/official-core.lock.json
+            cp "publish/qualification-source-${SELECTED_VERSION}.json" publish/channel-source.json
+          fi
       - name: Publish archives first and manifests last
         env:
           CHANNEL: ${{ inputs.channel }}
@@ -437,7 +523,7 @@ jobs:
               --title "Verified DeepSeek Harness core $CHANNEL channel" \
               --notes "Machine-readable $CHANNEL update assets used by DSH-Portable."
           gh release upload "$TAG" --repo WSL043/DSH-Portable-Updates publish/*.zip --clobber
-          gh release upload "$TAG" --repo WSL043/DSH-Portable-Updates publish/dsh-core-update-*.json publish/dsh-core-index-*.json publish/channel-source.json publish/official-core.lock.json --clobber
+          gh release upload "$TAG" --repo WSL043/DSH-Portable-Updates publish/dsh-core-update-*.json publish/dsh-core-index-*.json publish/channel-source.json publish/official-core.lock.json publish/official-core-*.lock.json publish/qualification-source-*.json --clobber
       - name: Keep only archives referenced by the bounded version catalogs
         env:
           CHANNEL: ${{ inputs.channel }}
@@ -459,3 +545,69 @@ jobs:
                   grep -Fxq "$name" "$KEEP" || gh api -X DELETE "repos/WSL043/DSH-Portable-Updates/releases/assets/$id" ;;
               esac
             done
+
+  qualification-state:
+    needs: [resolve, preview-runtime, build, publish]
+    if: always() && needs.resolve.outputs.version != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: update-channel
+      - uses: actions/download-artifact@v8
+        if: always()
+        continue-on-error: true
+        with:
+          name: resolved-selection-${{ inputs.channel }}
+          path: selection
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.19.0
+      - name: Record the qualification result with a retry cooldown
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          GH_TOKEN: ${{ github.token }}
+          RESOLVE_RESULT: ${{ needs.resolve.result }}
+          PREVIEW_RESULT: ${{ needs.preview-runtime.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          PUBLISH_REQUIRED: ${{ needs.resolve.outputs.publish }}
+          RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          RESOLVED_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p state
+          if [[ -f selection/selection.json ]]; then
+            cp selection/selection.json state/selection.json
+          else
+            printf '{"version":"%s","sourceSha":"%s","attemptedAt":"%s"}\n' \
+              "$RESOLVED_VERSION" "$RESOLVED_SOURCE_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > state/selection.json
+          fi
+          VERSION="$(jq -r '.version // empty' state/selection.json)"
+          [[ -n "$VERSION" ]] || exit 0
+          SOURCE_SHA="$(jq -r '.sourceSha // empty' state/selection.json)"
+          SOURCE_SHA="${SOURCE_SHA:-$RESOLVED_SOURCE_SHA}"
+          ATTEMPTED_AT="$(jq -r '.attemptedAt // empty' state/selection.json)"
+          ATTEMPTED_AT="${ATTEMPTED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+          if [[ "$RESOLVE_RESULT" = success && "$PUBLISH_REQUIRED" != true ]]; then
+            STATUS=success
+            RETRY_AFTER=''
+          elif [[ "$RESOLVE_RESULT" = success && "$PREVIEW_RESULT" = success && "$BUILD_RESULT" = success && "$PUBLISH_RESULT" = success ]]; then
+            STATUS=success
+            RETRY_AFTER=''
+          else
+            STATUS=failed
+            RETRY_AFTER="$(date -u -d '+24 hours' +%Y-%m-%dT%H:%M:%SZ)"
+          fi
+          TAG="update-channel-core-$CHANNEL"
+          if ! gh release view "$TAG" --repo WSL043/DSH-Portable-Updates >/dev/null 2>&1; then
+            gh release create "$TAG" --repo WSL043/DSH-Portable-Updates --target main --prerelease \
+              --title "Verified DeepSeek Harness core $CHANNEL channel" \
+              --notes "Machine-readable $CHANNEL update assets used by DSH-Portable."
+          fi
+          rm -f state/qualification-state.json
+          gh release download "$TAG" --repo WSL043/DSH-Portable-Updates \
+            --pattern qualification-state.json --dir state --clobber || printf '[]\n' > state/qualification-state.json
+          node update-channel/scripts/update-qualification-state.mjs \
+            state/qualification-state.json "$SOURCE_SHA" "$VERSION" "$STATUS" "$ATTEMPTED_AT" "$RETRY_AFTER"
+          gh release upload "$TAG" --repo WSL043/DSH-Portable-Updates state/qualification-state.json --clobber
