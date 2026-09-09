@@ -89,6 +89,19 @@ test('rebuild explicitly reselects the accepted version despite a successful sta
   assert.equal(selected.reason, 'rebuild')
 })
 
+test('a corrected intake pipeline retries failures without rebuilding successful cores', () => {
+  const current = { version: '0.1.2-rc.1', npmIntegrity: 'sha512-0.1.2-rc.1' }
+  const state = [
+    { sourceSha: 'shell', pipelineSha: 'old-pipeline', version: '0.1.3-alpha.2', status: 'failed', retryAfter: '2099-01-01T00:00:00Z' },
+    ...Object.keys(registry.versions).filter(version => version !== '0.1.3-alpha.2')
+      .map(version => ({ sourceSha: 'shell', pipelineSha: 'old-pipeline', version, status: 'success' })),
+  ]
+  assert.equal(selectCoreRelease(registry, 'candidate', current, false,
+    { sourceSha: 'shell', pipelineSha: 'old-pipeline', state }).version, null)
+  assert.equal(selectCoreRelease(registry, 'candidate', current, false,
+    { sourceSha: 'shell', pipelineSha: 'fixed-pipeline', state }).version, '0.1.3-alpha.2')
+})
+
 test('qualification state replaces one attempt and gives failures a 24-hour retry window', () => {
   const attemptedAt = '2026-09-09T12:00:00.000Z'
   const failed = updateQualificationState([], {
@@ -113,11 +126,8 @@ test('a fully qualified channel has no selected version or build request', () =>
   assert.equal(result.status, 'skip')
 })
 
-test('upstream metadata failure preserves the selected identity for the failure recorder', async t => {
+test('upstream provenance failure preserves the selected identity for the failure recorder', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'core-discovery-failure-'))
-  await mkdir(path.join(root, 'scripts'))
-  await writeFile(path.join(root, 'scripts/upstream-source-metadata.mjs'),
-    'export async function readOfficialSourceMetadata(){throw new Error("upstream layout changed")}')
   const original = JSON.stringify({ dsh: { version: '0.1.2-rc.1', npmIntegrity: 'sha512-0.1.2-rc.1' } })
   await writeFile(path.join(root, 'upstream.preview.lock.json'), original)
   await writeFile(path.join(root, 'upstream.lock.json'), original)
@@ -125,13 +135,14 @@ test('upstream metadata failure preserves the selected identity for the failure 
     if (url.includes('registry.npmjs.org')) return Response.json(registry)
     if (url.endsWith('official-core.lock.json') || url.endsWith('qualification-state.json')) return new Response('', { status: 404 })
     if (url.includes('/git/ref/tags/')) return Response.json({ object: { type: 'commit', sha: 'a'.repeat(40) } })
+    if (url.endsWith('/THIRD_PARTY_NOTICES.md')) throw new Error('upstream provenance unavailable')
     throw new Error(`Unexpected request ${url}`)
   })
   const selection = path.join(root, 'selection.json')
   await assert.rejects(discoverCoreSource({
     portableRoot: root, channel: 'candidate', output: path.join(root, 'lock.json'),
     selection, sourceSha: 'published-shell',
-  }), /upstream layout changed/)
+  }), /upstream provenance unavailable/)
   const record = JSON.parse(await readFile(selection, 'utf8'))
   assert.equal(record.sourceSha, 'published-shell')
   assert.equal(record.version, '0.1.3-alpha.2')
@@ -174,8 +185,6 @@ test('source packing, platform builds and publication all consume the discovered
 })
 test('new official candidate is resolved once into an immutable lock without changing Portable source', async t => {
   const root=await mkdtemp(path.join(os.tmpdir(),'core-discovery-'))
-  await mkdir(path.join(root,'scripts'))
-  await writeFile(path.join(root,'scripts/upstream-source-metadata.mjs'), 'export async function readOfficialSourceMetadata(){return {packageManager:"pnpm@11.7.0",packedFamilies:{dsh:251,vendor:9,landlock:1}}}')
   const original=JSON.stringify({dsh:{version:'0.1.2-rc.1',npmIntegrity:'sha512-0.1.2-rc.1'},defaultPlugins:{keep:'exact'}})
   await writeFile(path.join(root,'upstream.preview.lock.json'),original)
   await writeFile(path.join(root,'upstream.lock.json'),original)
@@ -194,7 +203,7 @@ test('new official candidate is resolved once into an immutable lock without cha
   assert.equal(result.version,'0.1.3-alpha.2')
   assert.equal(lock.dsh.reviewedCommit,'a'.repeat(40))
   assert.equal(lock.dsh.npmIntegrity,'sha512-0.1.3-alpha.2')
-  assert.equal(lock.dsh.packedFamilies.dsh,251)
+  assert.equal(lock.dsh.packedFamilies,undefined, 'package counts are resolved from the checked-out official planner')
   assert.match(lock.dsh.noticesSha256,/^[a-f0-9]{64}$/)
   assert.equal(JSON.parse(await readFile(selection,'utf8')).version,'0.1.3-alpha.2')
   assert.deepEqual(lock.defaultPlugins,{keep:'exact'})

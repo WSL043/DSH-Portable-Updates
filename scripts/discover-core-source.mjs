@@ -16,8 +16,9 @@ function stateRecords(value) {
   return []
 }
 
-function cooling(record, now) {
+function cooling(record, now, pipelineSha) {
   return record?.status === 'failed'
+    && (!pipelineSha || record.pipelineSha === pipelineSha)
     && record.retryAfter
     && Number.isFinite(Date.parse(record.retryAfter))
     && Date.parse(record.retryAfter) > now
@@ -39,6 +40,7 @@ function eligibleReleases(registry, channel, baselineVersion) {
 export function selectCoreRelease(registry, channel, current, acceptedOnly = false, {
   baselineVersion = current?.version,
   sourceSha = '',
+  pipelineSha = '',
   state = [],
   rebuild = false,
   now = Date.now(),
@@ -73,7 +75,7 @@ export function selectCoreRelease(registry, channel, current, acceptedOnly = fal
     const record = records
       .filter(item => item?.sourceSha === sourceSha && item?.version === candidate.version)
       .sort((left, right) => String(right.attemptedAt ?? '').localeCompare(String(left.attemptedAt ?? '')))[0]
-    if (record?.status === 'success' || cooling(record, now)) continue
+    if (record?.status === 'success' || cooling(record, now, pipelineSha)) continue
     return { version: candidate.version, integrity: candidate.integrity, status: 'selected' }
   }
   return { version: null, integrity: null, status: 'skip', reason: 'no-unverified-candidate' }
@@ -90,6 +92,7 @@ export async function discoverCoreSource({
   output,
   selection = 'selection.json',
   sourceSha = process.env.SOURCE_SHA || '',
+  pipelineSha = process.env.PIPELINE_SHA || '',
   token = process.env.GITHUB_TOKEN,
   acceptedOnly = false,
   rebuild = false,
@@ -102,6 +105,7 @@ export async function discoverCoreSource({
     schemaVersion: 1,
     channel,
     sourceSha: sourceSha || null,
+    pipelineSha: pipelineSha || null,
     version: null,
     publish: false,
     status: 'resolving',
@@ -123,6 +127,7 @@ export async function discoverCoreSource({
   const selected = selectCoreRelease(registry, channel, lock.dsh, acceptedOnly, {
     baselineVersion: stableLock.dsh.version,
     sourceSha,
+    pipelineSha,
     state,
     rebuild,
   })
@@ -130,6 +135,7 @@ export async function discoverCoreSource({
     schemaVersion: 1,
     channel,
     sourceSha: sourceSha || null,
+    pipelineSha: pipelineSha || null,
     version: selected.version,
     publish: Boolean(selected.version),
     status: selected.status,
@@ -140,11 +146,12 @@ export async function discoverCoreSource({
     let object = (await get(`https://api.github.com/repos/deepseek-ai/deepseek-harness/git/ref/tags/dsh-v${selected.version}`)).object
     if (object?.type === 'tag') object = (await get(`https://api.github.com/repos/deepseek-ai/deepseek-harness/git/tags/${object.sha}`)).object
     if (object?.type !== 'commit' || !/^[0-9a-f]{40}$/.test(object.sha)) throw new Error('Official release tag has no immutable commit')
-    const { readOfficialSourceMetadata } = await import(pathToFileURL(path.join(portableRoot, 'scripts/upstream-source-metadata.mjs')))
-    const metadata = await readOfficialSourceMetadata(object.sha, { json: get, text: url => get(url, false) })
     const notices = await get(`https://raw.githubusercontent.com/deepseek-ai/deepseek-harness/${object.sha}/THIRD_PARTY_NOTICES.md`, false)
     Object.assign(lock.dsh, { version: selected.version, tag: `dsh-v${selected.version}`, reviewedCommit: object.sha,
-      noticesSha256: createHash('sha256').update(notices).digest('hex'), ...metadata })
+      noticesSha256: createHash('sha256').update(notices).digest('hex') })
+    // The checked-out official release planner supplies these before any build.
+    delete lock.dsh.packageManager
+    delete lock.dsh.packedFamilies
     lock.dsh[channel === 'stable' ? 'integrity' : 'npmIntegrity'] = selected.integrity
   }
   await mkdir(path.dirname(output), { recursive: true })

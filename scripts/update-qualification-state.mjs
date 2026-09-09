@@ -17,6 +17,7 @@ export function updateQualificationState(value, {
   status,
   attemptedAt,
   retryAfter = null,
+  pipelineSha,
 }) {
   if (!sourceSha || !version) throw new Error('Qualification state requires sourceSha and version.')
   if (!STATUS.has(status)) throw new Error(`Unsupported qualification status: ${status}`)
@@ -24,7 +25,8 @@ export function updateQualificationState(value, {
   const effectiveRetryAfter = status === 'failed'
     ? retryAfter || new Date(Date.parse(attemptedAt) + 24 * 60 * 60 * 1000).toISOString()
     : null
-  const record = { sourceSha, version, status, attemptedAt, retryAfter: effectiveRetryAfter }
+  const record = { sourceSha, version, status, attemptedAt, retryAfter: effectiveRetryAfter,
+    ...(pipelineSha ? { pipelineSha } : {}) }
   const records = normalizeQualificationState(value)
     .filter(item => !(item.sourceSha === sourceSha && item.version === version))
   records.push(record)
@@ -32,8 +34,8 @@ export function updateQualificationState(value, {
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
-  const [filename, sourceSha, version, status, attemptedAt, retryAfter] = process.argv.slice(2)
+  const [filename, sourceSha, version, status, attemptedAt, retryAfter, pipelineSha] = process.argv.slice(2)
   const current = await readFile(filename, 'utf8').then(JSON.parse, error => error?.code === 'ENOENT' ? [] : Promise.reject(error))
-  const next = updateQualificationState(current, { sourceSha, version, status, attemptedAt, retryAfter: retryAfter || null })
+  const next = updateQualificationState(current, { sourceSha, version, status, attemptedAt, retryAfter: retryAfter || null, pipelineSha })
   await writeFile(filename, JSON.stringify(next, null, 2) + '\n', 'utf8')
 }
