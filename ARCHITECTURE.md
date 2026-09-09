@@ -36,6 +36,11 @@ behavior. Publishing an official core must not create a Portable release.
    already qualified versions do not need rebuilding for a pipeline-only change.
 4. Run the existing five-platform installation, startup, plugin preservation and
    rollback gates. Publish only successful component archives and catalogs.
+   During staging, bind our bundled market's settings peer to the exact official
+   host under test. npm otherwise excludes newly numbered prereleases from the
+   old enumerated peer range. This changes only our package metadata, preserves
+   other dependency constraints and records the binding; runtime qualification,
+   including the live market endpoint, still decides whether it may publish.
 5. Preserve the newest qualified default when adding an older version. A user
    explicitly chooses an older core; backfill must never silently downgrade it.
 

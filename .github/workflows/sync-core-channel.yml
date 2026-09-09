@@ -278,6 +278,11 @@ jobs:
         with:
           name: preview-packed-${{ inputs.channel }}
           path: preview-packed
+      - uses: actions/checkout@v7
+        with:
+          path: update-channel
+      - name: Bind our market to the exact host being qualified
+        run: node update-channel/scripts/bind-market-host.mjs . resolved-core/members.json
       - name: Stage the exact verified preview runtime (Windows)
         if: matrix.platform == 'windows'
         shell: powershell
@@ -393,6 +398,7 @@ jobs:
         with:
           name: core-diagnostics-${{ inputs.channel }}-${{ matrix.artifact }}
           path: |
+            market-host-binding.json
             ${{ runner.temp }}/core-acceptance/DSH-Portable/data/logs
             ${{ runner.temp }}/core-acceptance/DSH-Portable/data/dsh-home/profiles/web/package.json
             ${{ runner.temp }}/core-acceptance/DSH-Portable/acceptance
