@@ -1,0 +1,21 @@
+name: Sync cores for the published Portable candidate
+on:
+  schedule:
+    - cron: '47 * * * *'
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: write
+jobs:
+  candidate:
+    uses: ./.github/workflows/sync-core-channel.yml
+    with:
+      channel: candidate
+      shell_channel: candidate
+    secrets: inherit
+  stable:
+    uses: ./.github/workflows/sync-core-channel.yml
+    with:
+      channel: stable
+      shell_channel: candidate
+    secrets: inherit

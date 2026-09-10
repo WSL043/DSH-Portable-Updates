@@ -218,3 +218,18 @@ test('invalid prior catalog entries cannot inject untrusted manifests', async (t
 
   assert.deepEqual(result.index.versions.map(entry => entry.version), ['0.1.2-rc.1'])
 })
+
+test('candidate shell catalog URLs remain separate from stable-shell catalogs', async (t) => {
+  const output = await mkdtemp(path.join(os.tmpdir(), 'dsh-scoped-index-'))
+  t.after(() => rm(output, { recursive: true, force: true }))
+  const previous = process.env.CORE_CHANNEL_TAG
+  process.env.CORE_CHANNEL_TAG = 'update-channel-core-candidate-0.6.5-rc.2'
+  try {
+    const result = await buildCoreIndex({ channel: 'candidate', platform: 'windows-x64',
+      currentManifest: manifest('0.1.5-rc.1', 'current', 'windows-x64', { portableVersion: '0.6.5-rc.2' }), output })
+    assert.match(result.index.versions[0].manifestUrl, /update-channel-core-candidate-0\.6\.5-rc\.2\//)
+  } finally {
+    if (previous === undefined) delete process.env.CORE_CHANNEL_TAG
+    else process.env.CORE_CHANNEL_TAG = previous
+  }
+})
