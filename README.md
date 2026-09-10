@@ -15,3 +15,9 @@ The workflow uses the published stable Portable release tag and the matching suc
 The exact upstream checkout supplies its publishable package membership through the official release planner, including private-package exclusions. This packaging adapter is maintained here independently of Portable releases. A pipeline correction retries previously failed versions immediately while retaining successful qualification records; ordinary failures on an unchanged pipeline keep the 24-hour cooldown. See [the architecture notes](ARCHITECTURE.md) for compatibility and maintenance boundaries.
 
 If a newer upstream release requires additional adaptation, manually dispatch with `accepted_only=true` to requalify the already accepted core against the latest verified shell. It still checks registry integrity and runs the complete platform build and acceptance matrix before publication. Scheduled runs continue discovering and backfilling the supported twenty-version window; no manual per-version adaptation is needed while the existing interfaces remain compatible. An interface break still requires a Portable product change, and this option does not mark a failed new version as accepted.
+
+## Published Portable release candidates
+
+A separate hourly workflow qualifies cores against the latest **published** Portable release candidate and its successful main build. It publishes to `update-channel-core-{stable|candidate}-{portableVersion}`. New RC clients read their own version's catalog; the legacy stable-shell channels remain unchanged for existing clients. The same five-platform gates apply. A new RC's catalog may be unavailable until qualification finishes; an unpublished main commit is never selected as a shell baseline.
+
+This does not loosen compatibility checks or claim a tested core works on every shell. Version-scoped catalogs retain the evidence boundary while allowing stable Portable and RC users to follow separate release schedules.

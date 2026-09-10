@@ -3,6 +3,10 @@ name: Sync one verified DSH core channel
 on:
   workflow_call:
     inputs:
+      shell_channel:
+        description: Published Portable baseline (stable or candidate)
+        type: string
+        default: stable
       accepted_only:
         description: Requalify the already accepted core without upstream version discovery
         required: false
@@ -23,7 +27,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: verified-core-channel-${{ inputs.channel }}
+  group: verified-core-channel-${{ inputs.channel }}-${{ inputs.shell_channel }}
   cancel-in-progress: false
 
 jobs:
@@ -33,6 +37,7 @@ jobs:
       publish: ${{ steps.selection.outputs.publish }}
       version: ${{ steps.selection.outputs.version }}
       selection_status: ${{ steps.selection.outputs.status }}
+      update_tag: ${{ steps.source.outputs.update_tag }}
       source_sha: ${{ steps.source.outputs.source_sha }}
       run_id: ${{ steps.source.outputs.run_id }}
       lock_file: ${{ steps.source.outputs.lock_file }}
@@ -46,7 +51,7 @@ jobs:
           cat > selection.json <<EOF
           {"schemaVersion":1,"channel":"$CHANNEL","sourceSha":null,"version":null,"publish":false,"status":"unresolved","attemptedAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
           EOF
-      - name: Resolve the current stable DSH-Portable release
+      - name: Resolve a published and qualified Portable baseline
         id: source
         env:
           GH_TOKEN: ${{ github.token }}
@@ -59,9 +64,17 @@ jobs:
             *) echo "Unsupported channel: $CHANNEL" >&2; exit 1 ;;
           esac
 
-          RELEASE_JSON="$(gh api repos/WSL043/DSH-Portable/releases/latest)"
+          if [ '${{ inputs.shell_channel }}' = candidate ]; then
+            RELEASE_JSON="$(gh api 'repos/WSL043/DSH-Portable/releases?per_page=100' --jq '[.[] | select(.draft == false and .prerelease == true and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-(alpha|beta|rc)\\.[0-9]+$")))] | sort_by(.published_at) | last')"
+          else
+            test '${{ inputs.shell_channel }}' = stable
+            RELEASE_JSON="$(gh api repos/WSL043/DSH-Portable/releases/latest)"
+          fi
           RELEASE_TAG="$(jq -r '.tag_name // empty' <<<"$RELEASE_JSON")"
           test -n "$RELEASE_TAG"
+          UPDATE_TAG="update-channel-core-$CHANNEL"
+          if [ '${{ inputs.shell_channel }}' = candidate ]; then UPDATE_TAG="$UPDATE_TAG-${RELEASE_TAG#v}"; fi
+          echo "update_tag=$UPDATE_TAG" >> "$GITHUB_OUTPUT"
           TAG_REF="$(gh api "repos/WSL043/DSH-Portable/git/ref/tags/$RELEASE_TAG")"
           TAG_TYPE="$(jq -r '.object.type // empty' <<<"$TAG_REF")"
           TAG_SHA="$(jq -r '.object.sha // empty' <<<"$TAG_REF")"
@@ -82,7 +95,8 @@ jobs:
           test -n "$SOURCE_RUN_ID" && test "$SOURCE_RUN_ID" != null
           SOURCE_VERSION="$(curl --fail --silent --show-error --location --retry 3 \
             "https://raw.githubusercontent.com/WSL043/DSH-Portable/$SOURCE_SHA/package.json" | jq -r .version)"
-          [[ "$SOURCE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$SOURCE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]
+          test "v$SOURCE_VERSION" = "$RELEASE_TAG"
 
           echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
           echo "run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
@@ -106,12 +120,13 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           CHANNEL: ${{ inputs.channel }}
           SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          CORE_CHANNEL_TAG: ${{ steps.source.outputs.update_tag }}
           PIPELINE_SHA: ${{ github.sha }}
           ACCEPTED_CORE_ONLY: ${{ inputs.accepted_only || false }}
           REBUILD_CORE: ${{ inputs.rebuild || false }}
         run: |
           set -euo pipefail
-          node --test update-channel/tests/*.test.mjs
+          env -u CORE_CHANNEL_TAG node --test update-channel/tests/*.test.mjs
           node update-channel/scripts/discover-core-source.mjs portable-source "$CHANNEL" resolved-core/lock.json selection.json
           echo "commit=$(jq -r '.dsh.reviewedCommit' resolved-core/lock.json)" >> "$GITHUB_OUTPUT"
           echo "publish=$(jq -r '.publish' selection.json)" >> "$GITHUB_OUTPUT"
@@ -406,6 +421,8 @@ jobs:
           compression-level: 0
 
   publish:
+    env:
+      CORE_CHANNEL_TAG: ${{ needs.resolve.outputs.update_tag }}
     needs: [resolve, build]
     if: needs.resolve.result == 'success' && needs.resolve.outputs.publish == 'true' && needs.build.result == 'success'
     runs-on: ubuntu-latest
@@ -432,7 +449,7 @@ jobs:
         with:
           node-version: 24.19.0
       - name: Test the bounded core-version catalog builder
-        run: node --test update-channel/tests/*.test.mjs
+        run: env -u CORE_CHANNEL_TAG node --test update-channel/tests/*.test.mjs
       - uses: actions/download-artifact@v8
         with:
           pattern: core-${{ inputs.channel }}-*
@@ -456,7 +473,7 @@ jobs:
           for asset in official-core.lock.json channel-source.json; do
             rm -f "previous/$asset"
             curl --fail --silent --show-error --location \
-              "https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-$CHANNEL/$asset" \
+              "https://github.com/WSL043/DSH-Portable-Updates/releases/download/$CORE_CHANNEL_TAG/$asset" \
               --output "previous/$asset" || rm -f "previous/$asset"
           done
           KEEP_PREVIOUS_LATEST=false
@@ -467,13 +484,13 @@ jobs:
 
             PREVIOUS="previous/dsh-core-update-${platform}.json"
             if ! curl --fail --silent --show-error --location \
-              "https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-$CHANNEL/dsh-core-update-${platform}.json" \
+              "https://github.com/WSL043/DSH-Portable-Updates/releases/download/$CORE_CHANNEL_TAG/dsh-core-update-${platform}.json" \
               --output "$PREVIOUS"; then
               rm -f "$PREVIOUS"
             fi
             PREVIOUS_INDEX="previous/dsh-core-index-${platform}.json"
             if ! curl --fail --silent --show-error --location \
-              "https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-$CHANNEL/dsh-core-index-${platform}.json" \
+              "https://github.com/WSL043/DSH-Portable-Updates/releases/download/$CORE_CHANNEL_TAG/dsh-core-index-${platform}.json" \
               --output "$PREVIOUS_INDEX"; then
               rm -f "$PREVIOUS_INDEX"
             fi
@@ -496,7 +513,7 @@ jobs:
             test "$VERSION" = "$SELECTED_VERSION"
             PUBLISHED_ZIP="DSH-Portable-update-${platform}-${VERSION}-${HASH:0:12}.zip"
             cp "$ZIP" "publish/$PUBLISHED_ZIP"
-            URL="https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-$CHANNEL/$PUBLISHED_ZIP"
+            URL="https://github.com/WSL043/DSH-Portable-Updates/releases/download/$CORE_CHANNEL_TAG/$PUBLISHED_ZIP"
             jq --arg url "$URL" '.component.urls = [$url]' "$MANIFEST" \
               > "current/dsh-core-update-${platform}.json"
             node update-channel/scripts/build-core-index.mjs \
@@ -540,7 +557,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="update-channel-core-$CHANNEL"
+          TAG="$CORE_CHANNEL_TAG"
           gh release view "$TAG" --repo WSL043/DSH-Portable-Updates >/dev/null 2>&1 || \
             gh release create "$TAG" --repo WSL043/DSH-Portable-Updates --target main --prerelease \
               --title "Verified DeepSeek Harness core $CHANNEL channel" \
@@ -559,7 +576,7 @@ jobs:
             jq -r '.versions[].manifestUrl | split("/")[-1]' "$catalog" >> "$KEEP"
           done
           sort -u "$KEEP" -o "$KEEP"
-          RELEASE_ID="$(gh api "repos/WSL043/DSH-Portable-Updates/releases/tags/update-channel-core-$CHANNEL" --jq .id)"
+          RELEASE_ID="$(gh api "repos/WSL043/DSH-Portable-Updates/releases/tags/$CORE_CHANNEL_TAG" --jq .id)"
           gh api "repos/WSL043/DSH-Portable-Updates/releases/$RELEASE_ID/assets?per_page=100" \
             --paginate --jq '.[] | [.id,.name] | @tsv' | while IFS=$'\t' read -r id name; do
               case "$name" in
@@ -570,6 +587,8 @@ jobs:
             done
 
   qualification-state:
+    env:
+      CORE_CHANNEL_TAG: ${{ needs.resolve.outputs.update_tag }}
     needs: [resolve, preview-runtime, build, publish]
     if: always() && needs.resolve.outputs.version != ''
     runs-on: ubuntu-latest
@@ -623,7 +642,7 @@ jobs:
             STATUS=failed
             RETRY_AFTER="$(date -u -d '+24 hours' +%Y-%m-%dT%H:%M:%SZ)"
           fi
-          TAG="update-channel-core-$CHANNEL"
+          TAG="$CORE_CHANNEL_TAG"
           if ! gh release view "$TAG" --repo WSL043/DSH-Portable-Updates >/dev/null 2>&1; then
             gh release create "$TAG" --repo WSL043/DSH-Portable-Updates --target main --prerelease \
               --title "Verified DeepSeek Harness core $CHANNEL channel" \

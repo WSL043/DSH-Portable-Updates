@@ -121,8 +121,8 @@ export async function discoverCoreSource({
     return json ? response.json() : response.text()
   }
   const registry = await get('https://registry.npmjs.org/@deepseek-ai%2Fdsh')
-  const accepted = await get(`https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-${channel}/official-core.lock.json`, true, true)
-  const state = await get(`https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-${channel}/qualification-state.json`, true, true)
+  const accepted = await get(`https://github.com/WSL043/DSH-Portable-Updates/releases/download/${process.env.CORE_CHANNEL_TAG || `update-channel-core-${channel}`}/official-core.lock.json`, true, true)
+  const state = await get(`https://github.com/WSL043/DSH-Portable-Updates/releases/download/${process.env.CORE_CHANNEL_TAG || `update-channel-core-${channel}`}/qualification-state.json`, true, true)
   if (accepted?.dsh && compareVersions(accepted.dsh.version, lock.dsh.version) > 0) lock.dsh = accepted.dsh
   const selected = selectCoreRelease(registry, channel, lock.dsh, acceptedOnly, {
     baselineVersion: stableLock.dsh.version,

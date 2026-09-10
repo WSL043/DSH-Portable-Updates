@@ -47,7 +47,7 @@ function versionedManifestName(platform, version) {
 }
 
 function releaseBase(channel) {
-  return `https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-${channel}`
+  return `https://github.com/WSL043/DSH-Portable-Updates/releases/download/${process.env.CORE_CHANNEL_TAG || `update-channel-core-${channel}`}`
 }
 
 export async function buildCoreIndex({
