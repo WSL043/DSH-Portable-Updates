@@ -56,6 +56,21 @@ export function selectCoreRelease(registry, channel, current, acceptedOnly = fal
   const records = stateRecords(state)
   const candidates = acceptedOnly ? [] : eligibleReleases(registry, channel, baselineVersion)
   const currentPattern = channel === 'stable' ? STABLE_CURRENT_VERSION : PREVIEW_VERSION
+  // A newer Portable baseline must not permanently erase previously qualified
+  // rollback choices. Rebuild at most five recent historical cores against it;
+  // their old success is only eligibility, never proof of current compatibility.
+  if (!acceptedOnly) {
+    const history = [...new Set(records.filter(item => item.status === 'success').map(item => item.version))]
+      .filter(version => currentPattern.test(version)
+        && compareVersions(version, baselineVersion) < 0)
+      .sort((a, b) => compareVersions(b, a)).slice(0, 5)
+    for (const version of history) {
+      const metadata = registry?.versions?.[version]
+      if (!metadata?.deprecated && typeof metadata?.dist?.integrity === 'string' && metadata.dist.integrity) {
+        candidates.push({ version, integrity: metadata.dist.integrity })
+      }
+    }
+  }
   const currentCandidate = currentVersion
     && currentPattern.test(currentVersion)
     && (!baselineVersion || compareVersions(currentVersion, baselineVersion) >= 0)
