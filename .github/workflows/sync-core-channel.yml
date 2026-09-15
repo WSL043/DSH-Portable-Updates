@@ -2,6 +2,10 @@ name: Sync one verified DSH core channel
 
 on:
   workflow_call:
+    outputs:
+      attempted:
+        description: Whether a core was selected for qualification in this run
+        value: ${{ jobs.resolve.outputs.publish }}
     inputs:
       shell_channel:
         description: Published Portable baseline (stable or candidate)
@@ -298,6 +302,8 @@ jobs:
           path: update-channel
       - name: Bind our market to the exact host being qualified
         run: node update-channel/scripts/bind-market-host.mjs . resolved-core/members.json
+      - name: Align runtime verification with the published permission adapter
+        run: node update-channel/scripts/adapt-runtime-verifier.mjs .
       - name: Stage the exact verified preview runtime (Windows)
         if: matrix.platform == 'windows'
         shell: powershell
