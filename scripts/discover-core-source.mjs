@@ -127,7 +127,11 @@ export async function discoverCoreSource({
     attemptedAt,
   })
   async function get(url, json = true, optional = false) {
-    const response = await fetch(url, { signal: AbortSignal.timeout(60000), headers: {
+    const requestUrl = new URL(url)
+    if (requestUrl.hostname === 'github.com' && requestUrl.pathname.includes('/releases/download/')) {
+      requestUrl.searchParams.set('_core_check', String(Date.now()))
+    }
+    const response = await fetch(requestUrl.href, { signal: AbortSignal.timeout(60000), headers: {
       'user-agent': 'DSH-Portable-core-intake',
       ...(url.startsWith('https://api.github.com/') && token ? { authorization: `Bearer ${token}` } : {}),
     } })
