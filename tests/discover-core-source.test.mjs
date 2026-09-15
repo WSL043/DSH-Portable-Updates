@@ -132,6 +132,8 @@ test('upstream provenance failure preserves the selected identity for the failur
   await writeFile(path.join(root, 'upstream.preview.lock.json'), original)
   await writeFile(path.join(root, 'upstream.lock.json'), original)
   t.mock.method(globalThis, 'fetch', async url => {
+    if (url.includes('/releases/download/')) assert.ok(new URL(url).searchParams.has('_core_check'))
+    url = url.split('?')[0]
     if (url.includes('registry.npmjs.org')) return Response.json(registry)
     if (url.endsWith('official-core.lock.json') || url.endsWith('qualification-state.json')) return new Response('', { status: 404 })
     if (url.includes('/git/ref/tags/')) return Response.json({ object: { type: 'commit', sha: 'a'.repeat(40) } })
@@ -156,6 +158,8 @@ test('accepted-only refresh preserves the published immutable core when newer so
   await writeFile(path.join(root,'upstream.preview.lock.json'),original)
   await writeFile(path.join(root,'upstream.lock.json'),original)
   t.mock.method(globalThis,'fetch',async url=>{
+    if (url.includes('/releases/download/')) assert.ok(new URL(url).searchParams.has('_core_check'))
+    url = url.split('?')[0]
     if(url.includes('registry.npmjs.org'))return Response.json({...registry,'dist-tags':{alpha:'0.1.5-alpha.1'}})
     if(url.endsWith('official-core.lock.json'))return Response.json({dsh:published})
     if(url.endsWith('qualification-state.json'))return new Response('',{status:404})
@@ -189,6 +193,8 @@ test('new official candidate is resolved once into an immutable lock without cha
   await writeFile(path.join(root,'upstream.preview.lock.json'),original)
   await writeFile(path.join(root,'upstream.lock.json'),original)
   t.mock.method(globalThis,'fetch',async(url,options)=>{
+    if (url.includes('/releases/download/')) assert.ok(new URL(url).searchParams.has('_core_check'))
+    url = url.split('?')[0]
     if(url.includes('registry.npmjs.org')){assert.equal(options.headers.authorization,undefined);return Response.json(registry)}
     if(url.endsWith('official-core.lock.json'))return new Response('',{status:404})
     if(url.endsWith('qualification-state.json'))return new Response('',{status:404})
