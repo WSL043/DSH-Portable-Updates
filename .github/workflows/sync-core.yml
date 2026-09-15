@@ -5,6 +5,11 @@ on:
     - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
+      remaining:
+        description: Additional bounded queue-drain runs after this one (0 to 6)
+        required: false
+        type: number
+        default: 6
       accepted_only:
         description: Requalify the already accepted core for the latest verified shell without discovering a new upstream version
         required: false
@@ -19,6 +24,10 @@ on:
 permissions:
   actions: read
   contents: write
+
+concurrency:
+  group: core-sync-queue
+  cancel-in-progress: false
 
 jobs:
   stable:
@@ -36,3 +45,22 @@ jobs:
       accepted_only: ${{ inputs.accepted_only || false }}
       rebuild: ${{ inputs.rebuild || false }}
     secrets: inherit
+
+  drain-queue:
+    needs: [stable, candidate]
+    if: >-
+      always() && !cancelled() && !inputs.accepted_only && !inputs.rebuild &&
+      (needs.stable.outputs.attempted == 'true' || needs.candidate.outputs.attempted == 'true') &&
+      (github.event_name == 'schedule' || inputs.remaining > 0)
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Continue the bounded qualification queue after recording this result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REMAINING: ${{ github.event_name == 'schedule' && 6 || inputs.remaining }}
+        run: |
+          set -euo pipefail
+          [[ "$REMAINING" =~ ^[1-6]$ ]] || { echo 'Invalid queue budget'; exit 1; }
+          gh workflow run sync-core.yml --repo "$GITHUB_REPOSITORY" --ref main -f remaining="$((REMAINING - 1))"
