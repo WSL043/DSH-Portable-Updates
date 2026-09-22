@@ -372,6 +372,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows core subprocess visibility smoke failed.' }
           & node scripts/smoke-windows-startup-theme.mjs $BaselineRoot --disposable
           if ($LASTEXITCODE -ne 0) { throw 'Windows core startup and theme smoke failed.' }
+      - name: Exercise default plugins in the updated native Windows product
+        if: matrix.platform == 'windows'
+        shell: powershell
+        run: |
+          $DriverRoot = Join-Path $env:RUNNER_TEMP 'core-ui-driver'
+          & npm install --prefix $DriverRoot --ignore-scripts --no-audit --no-fund playwright@1.63.0
+          if ($LASTEXITCODE -ne 0) { throw 'Native plugin UI driver installation failed.' }
+          $BaselineRoot = Join-Path $env:RUNNER_TEMP 'core-acceptance/DSH-Portable'
+          & node update-channel/scripts/verify-default-plugin-ui.mjs $BaselineRoot (Join-Path $DriverRoot 'package.json') --disposable
+          if ($LASTEXITCODE -ne 0) { throw 'Default plugin native UI qualification failed; core publication is blocked.' }
       - name: Verify and smoke the core update on the exact base product
         if: matrix.platform == 'macos'
         run: |
