@@ -10,6 +10,41 @@ import { promisify } from 'node:util'
 const exec = promisify(execFile)
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 
+async function visibleOnboarding(page) {
+  const dialog = page.getByRole('dialog').filter({
+    hasText: /Internal Testing Notice|内测声明|Add an API key to get started|添加 API 密钥|添加一个 API Key/i,
+  }).last()
+  return await dialog.isVisible() ? dialog : null
+}
+
+async function dismissOnboarding(page) {
+  for (let step = 0; step < 3; step++) {
+    const dialog = await visibleOnboarding(page)
+    if (!dialog) return
+    const action = dialog.getByRole('button', {
+      name: /^(继续|Continue|稍后配置|Configure later|Set up later)$/,
+    }).first()
+    await action.click()
+    await dialog.waitFor({ state: 'hidden' })
+  }
+  assert.equal(await visibleOnboarding(page), null, 'known onboarding dialog should close before plugin actions')
+}
+
+async function openArchivedSessions(page) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await dismissOnboarding(page)
+    try {
+      await page.locator('#archived-sessions').click({ timeout: 2500 })
+      return
+    } catch (error) {
+      // The official new-session onboarding can mount after the active
+      // session is archived. Only retry after observing that exact blocker.
+      if (!await visibleOnboarding(page)) throw error
+    }
+  }
+  throw new Error('archived sessions remained covered by onboarding')
+}
+
 /** Operate real official controls; never remove onboarding DOM or patch the host. */
 export async function verifyDefaultPluginUi(page, evidence, title = 'Portable default plugin qualification session', { confirmDelete = false, staleArchiveId } = {}) {
   const errors = []
@@ -21,10 +56,7 @@ export async function verifyDefaultPluginUi(page, evidence, title = 'Portable de
   page.on('pageerror', onError)
   page.on('console', onConsole)
   try {
-    for (const name of [/^(继续|Continue)$/, /^(稍后配置|Configure later)$/]) {
-      const button = page.getByRole('button', { name })
-      if (await button.waitFor({ state: 'visible', timeout: 2500 }).then(() => true, () => false)) await button.click()
-    }
+    await dismissOnboarding(page)
     await page.getByRole('button', { name: /^(Plugins|插件)$/ }).first().click()
     for (const packageName of ['dsh-chat-manager', 'dsh-image-viewer']) {
       const toggle = page.locator(`[data-plugin-package="${packageName}"]`).getByRole('switch')
@@ -87,13 +119,8 @@ export async function verifyDefaultPluginUi(page, evidence, title = 'Portable de
     await row.getByRole('button', { name: /Session actions|会话.*操作/ }).click()
     await page.getByRole('menuitem', { name: /^(Archive session|归档会话)$/ }).click()
     await row.waitFor({ state: 'hidden' })
-    // Archiving the active session first exposes the new-session onboarding in
-    // a fresh profile. Dismiss its real buttons before exercising the sidebar.
-    for (const name of [/^(继续|Continue)$/, /^(稍后配置|Configure later)$/]) {
-      const button = page.getByRole('button', { name })
-      if (await button.waitFor({ state: 'visible', timeout: 2500 }).then(() => true, () => false)) await button.click()
-    }
-    await page.locator('#archived-sessions').click()
+    // Archiving the active session can asynchronously open official onboarding.
+    await openArchivedSessions(page)
     const search = page.getByRole('searchbox', { name: /^(Search archived sessions|搜索已归档会话)$/ })
     await search.waitFor()
     assert.equal(await page.getByRole('dialog', { name: /^(Archived sessions|归档会话)$/ }).count(), 0, 'archive shortcut opens official settings without a second popup')
@@ -118,7 +145,7 @@ export async function verifyDefaultPluginUi(page, evidence, title = 'Portable de
       await selected.getByRole('button', { name: /Session actions|会话.*操作/ }).click()
       await page.getByRole('menuitem', { name: /^(Archive session|归档会话)$/ }).click()
       await selected.waitFor({ state: 'hidden' })
-      await page.locator('#archived-sessions').click()
+      await openArchivedSessions(page)
       await search.fill(title)
       await remove.click()
       const deleted = page.waitForResponse(r => new URL(r.url()).pathname === '/plugins/dsh-session-delete/delete' && r.request().method() === 'POST')
@@ -147,7 +174,7 @@ export async function verifyDefaultPluginUi(page, evidence, title = 'Portable de
     }
     await page.screenshot({ path: path.join(evidence, 'composer-after-enable-disable.png') })
     if (staleArchiveId) {
-      await page.locator('#archived-sessions').click()
+      await openArchivedSessions(page)
       await search.fill(staleArchiveId)
       const staleRemove = page.getByRole('button', { name: new RegExp(`^(Delete permanently|永久删除) ${staleArchiveId}$`) })
       await staleRemove.click()
