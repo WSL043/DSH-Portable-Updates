@@ -30,19 +30,23 @@ async function dismissOnboarding(page) {
   assert.equal(await visibleOnboarding(page), null, 'known onboarding dialog should close before plugin actions')
 }
 
-async function openArchivedSessions(page) {
+async function clickAfterOnboarding(page, locator) {
   for (let attempt = 0; attempt < 3; attempt++) {
     await dismissOnboarding(page)
     try {
-      await page.locator('#archived-sessions').click({ timeout: 2500 })
+      await locator.click({ timeout: 2500 })
       return
     } catch (error) {
-      // The official new-session onboarding can mount after the active
-      // session is archived. Only retry after observing that exact blocker.
+      // The official first-run dialog can appear between a visibility check
+      // and the click. Retry only when that exact dialog blocked the action.
       if (!await visibleOnboarding(page)) throw error
     }
   }
-  throw new Error('archived sessions remained covered by onboarding')
+  throw new Error('official onboarding kept covering the requested control')
+}
+
+async function openArchivedSessions(page) {
+  await clickAfterOnboarding(page, page.locator('#archived-sessions'))
 }
 
 /** Operate real official controls; never remove onboarding DOM or patch the host. */
@@ -57,21 +61,21 @@ export async function verifyDefaultPluginUi(page, evidence, title = 'Portable de
   page.on('console', onConsole)
   try {
     await dismissOnboarding(page)
-    await page.getByRole('button', { name: /^(Plugins|插件)$/ }).first().click()
+    await clickAfterOnboarding(page, page.getByRole('button', { name: /^(Plugins|插件)$/ }).first())
     for (const packageName of ['dsh-chat-manager', 'dsh-image-viewer']) {
       const toggle = page.locator(`[data-plugin-package="${packageName}"]`).getByRole('switch')
       await toggle.waitFor()
       if (await toggle.getAttribute('aria-checked') !== 'true') {
-        await toggle.click()
+        await clickAfterOnboarding(page, toggle)
         await page.waitForFunction(packageName => document.querySelector(`[data-plugin-package="${packageName}"] [role="switch"]`)?.getAttribute('aria-checked') === 'true', packageName)
       }
     }
     const selected = page.getByRole('treeitem').filter({ hasText: title }).last()
     if (!await selected.isVisible()) {
       const ungrouped = page.getByText(/^(未分组|Ungrouped)$/, { exact: true })
-      if (await ungrouped.isVisible()) await ungrouped.click()
+      if (await ungrouped.isVisible()) await clickAfterOnboarding(page, ungrouped)
     }
-    await selected.click()
+    await clickAfterOnboarding(page, selected)
     const later = page.getByRole('button', { name: /^(稍后配置|Configure later)$/ })
     if (await later.waitFor({ state: 'visible', timeout: 1500 }).then(() => true, () => false)) await later.click()
     const input = page.locator('[contenteditable="true"][role="textbox"]').first()
@@ -138,7 +142,7 @@ export async function verifyDefaultPluginUi(page, evidence, title = 'Portable de
     await restore.waitFor({ state: 'hidden' })
     await page.getByRole('button', { name: /^(Close|关闭)$/ }).last().click()
     await search.waitFor({ state: 'hidden' })
-    await selected.click()
+    await clickAfterOnboarding(page, selected)
     await input.fill('Composer remains usable after archive restoration')
     if (confirmDelete) {
       await selected.hover()
@@ -162,12 +166,12 @@ export async function verifyDefaultPluginUi(page, evidence, title = 'Portable de
       for (const enabled of [false, true]) {
         const configureLater = page.getByRole('button', { name: /^(稍后配置|Configure later)$/ })
         if (await configureLater.waitFor({ state: 'visible', timeout: 2500 }).then(() => true, () => false)) await configureLater.click()
-        await page.getByRole('button', { name: /^(Plugins|插件)$/ }).first().click()
+        await clickAfterOnboarding(page, page.getByRole('button', { name: /^(Plugins|插件)$/ }).first())
         const toggle = page.locator(`[data-plugin-package="${packageName}"]`).getByRole('switch')
         await toggle.waitFor()
-        if (await toggle.getAttribute('aria-checked') !== String(enabled)) await toggle.click()
+        if (await toggle.getAttribute('aria-checked') !== String(enabled)) await clickAfterOnboarding(page, toggle)
         await page.waitForFunction(({ packageName, enabled }) => document.querySelector(`[data-plugin-package="${packageName}"] [role="switch"]`)?.getAttribute('aria-checked') === String(enabled), { packageName, enabled })
-        await page.getByRole('button', { name: /^(New session|新建会话|新会话)$/i }).first().click()
+        await clickAfterOnboarding(page, page.getByRole('button', { name: /^(New session|新建会话|新会话)$/i }).first())
         await input.fill(`Composer check after ${packageName} ${enabled}`)
         assert.equal(await input.isEditable(), true)
       }
