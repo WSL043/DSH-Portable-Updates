@@ -2,7 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-const STATUS = new Set(['success', 'failed'])
+const STATUS = new Set(['success', 'failed', 'blocked'])
 
 export function normalizeQualificationState(value) {
   if (Array.isArray(value)) return value.filter(record => record && typeof record === 'object')

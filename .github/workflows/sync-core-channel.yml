@@ -184,6 +184,8 @@ jobs:
     needs: resolve
     if: needs.resolve.result == 'success' && needs.resolve.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    outputs:
+      adapter_status: ${{ steps.adapter-preflight.outputs.status }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -231,6 +233,16 @@ jobs:
           test "$(find upstream/dist/npm -maxdepth 1 -name '*.tgz' | wc -l)" -eq "${{ steps.preview.outputs.dshCount }}"
           test "$(find upstream/dist/npm-vendor -maxdepth 1 -name '*.tgz' | wc -l)" -eq "${{ steps.preview.outputs.vendorCount }}"
           test "$(find upstream/dist/npm-landlock -maxdepth 1 -name '*.tgz' | wc -l)" -eq "${{ steps.preview.outputs.landlockCount }}"
+      - uses: actions/checkout@v7
+        with:
+          path: update-channel
+      - name: Prepare adapter preflight against the published Portable baseline
+        run: |
+          node update-channel/scripts/bind-market-host.mjs . resolved-core/members.json
+          node scripts/stage-preview-runtime.mjs --packed-root upstream/dist --output preflight-app --lock-file '${{ needs.resolve.outputs.lock_file }}'
+      - name: Reject incompatible adapters before platform fan-out
+        id: adapter-preflight
+        run: node update-channel/scripts/preflight-adapters.mjs . preflight-app
       - uses: actions/upload-artifact@v7
         with:
           name: preview-packed-${{ inputs.channel }}
@@ -627,6 +639,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RESOLVE_RESULT: ${{ needs.resolve.result }}
           PREVIEW_RESULT: ${{ needs.preview-runtime.result }}
+          ADAPTER_STATUS: ${{ needs.preview-runtime.outputs.adapter_status }}
           BUILD_RESULT: ${{ needs.build.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
           PUBLISH_REQUIRED: ${{ needs.resolve.outputs.publish }}
@@ -653,6 +666,9 @@ jobs:
             RETRY_AFTER=''
           elif [[ "$RESOLVE_RESULT" = success && "$PREVIEW_RESULT" = success && "$BUILD_RESULT" = success && "$PUBLISH_RESULT" = success ]]; then
             STATUS=success
+            RETRY_AFTER=''
+          elif [[ "$ADAPTER_STATUS" = blocked ]]; then
+            STATUS=blocked
             RETRY_AFTER=''
           else
             STATUS=failed
