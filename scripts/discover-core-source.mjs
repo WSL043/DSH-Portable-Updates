@@ -17,6 +17,7 @@ function stateRecords(value) {
 }
 
 function cooling(record, now, pipelineSha) {
+  if (record?.status === 'blocked' && (!pipelineSha || record.pipelineSha === pipelineSha)) return true
   return record?.status === 'failed'
     && (!pipelineSha || record.pipelineSha === pipelineSha)
     && record.retryAfter
