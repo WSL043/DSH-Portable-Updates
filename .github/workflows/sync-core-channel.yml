@@ -242,7 +242,7 @@ jobs:
           node scripts/stage-preview-runtime.mjs --packed-root upstream/dist --output preflight-app --lock-file '${{ needs.resolve.outputs.lock_file }}'
       - name: Reject incompatible adapters before platform fan-out
         id: adapter-preflight
-        run: node update-channel/scripts/preflight-adapters.mjs . preflight-app
+        run: node update-channel/scripts/preflight-adapters.mjs . preflight-app resolved-core/lock.json
       - uses: actions/upload-artifact@v7
         with:
           name: preview-packed-${{ inputs.channel }}
@@ -613,6 +613,30 @@ jobs:
                   grep -Fxq "$name" "$KEEP" || gh api -X DELETE "repos/WSL043/DSH-Portable-Updates/releases/assets/$id" ;;
               esac
             done
+
+  channel-result:
+    needs: [resolve, preview-runtime, build, publish]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.19.0
+      - name: Report channel delivery separately from historical backfill
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          SELECTED: ${{ needs.resolve.outputs.publish }}
+          CORE_TAG: ${{ needs.resolve.outputs.update_tag }}
+          RESOLVE_RESULT: ${{ needs.resolve.result }}
+          PREFLIGHT_RESULT: ${{ needs.preview-runtime.outputs.adapter_status }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+        run: node scripts/report-core-result.mjs
 
   qualification-state:
     env:

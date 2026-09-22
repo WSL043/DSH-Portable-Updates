@@ -1,8 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { ADAPTERS, preflightAdapters } from '../scripts/preflight-adapters.mjs'
+import { ADAPTERS, preflightAdapters, checkDefaultPluginCapabilities } from '../scripts/preflight-adapters.mjs'
 import { selectCoreRelease } from '../scripts/discover-core-source.mjs'
 import { updateQualificationState } from '../scripts/update-qualification-state.mjs'
+
+test('the shipped native-slot chat client cannot qualify a host without that slot', () => {
+  const lock = { defaultPlugins: { chatManager: { version: '1.5.0' } } }
+  assert.equal(checkDefaultPluginCapabilities(lock, 'legacy workspace').status, 'blocked')
+  assert.equal(checkDefaultPluginCapabilities(lock, '"sidebar.workspaces.session.menu.item": {}').status, 'success')
+  assert.equal(checkDefaultPluginCapabilities({defaultPlugins:{chatManager:{version:'1.3.5'}}}, 'legacy workspace').status, 'success')
+})
 
 test('preflight stops on structural failure before remaining adapters', () => {
   let calls = 0
