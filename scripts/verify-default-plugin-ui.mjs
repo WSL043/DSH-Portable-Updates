@@ -11,7 +11,7 @@ const exec = promisify(execFile)
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 /** Operate real official controls; never remove onboarding DOM or patch the host. */
-export async function verifyDefaultPluginUi(page, evidence, title = 'Portable default plugin qualification session', { confirmDelete = false } = {}) {
+export async function verifyDefaultPluginUi(page, evidence, title = 'Portable default plugin qualification session', { confirmDelete = false, staleArchiveId } = {}) {
   const errors = []
   const onError = error => errors.push(error.message)
   const onConsole = message => {
@@ -116,7 +116,11 @@ export async function verifyDefaultPluginUi(page, evidence, title = 'Portable de
     if (confirmDelete) {
       await selected.hover()
       await selected.getByRole('button', { name: /Session actions|会话.*操作/ }).click()
-      await page.getByRole('menuitem', { name: /^(永久删除|删除会话|Delete session|Delete permanently)$/ }).click()
+      await page.getByRole('menuitem', { name: /^(Archive session|归档会话)$/ }).click()
+      await selected.waitFor({ state: 'hidden' })
+      await page.locator('#archived-sessions').click()
+      await search.fill(title)
+      await remove.click()
       const deleted = page.waitForResponse(r => new URL(r.url()).pathname === '/plugins/dsh-session-delete/delete' && r.request().method() === 'POST')
       await dialog.getByRole('button', { name: /^(永久删除|Delete permanently|确认永久删除|Confirm permanent deletion)$/ }).click()
       const deletion = await deleted
@@ -124,6 +128,8 @@ export async function verifyDefaultPluginUi(page, evidence, title = 'Portable de
       assert.equal((await deletion.json()).ok, true)
       await selected.waitFor({ state: 'hidden' })
       await dialog.waitFor({ state: 'hidden' })
+      await remove.waitFor({ state: 'hidden' })
+      await page.getByRole('button', { name: /^(Close|关闭)$/ }).last().click()
     }
     for (const packageName of ['dsh-chat-manager', 'dsh-image-viewer']) {
       for (const enabled of [false, true]) {
@@ -140,6 +146,26 @@ export async function verifyDefaultPluginUi(page, evidence, title = 'Portable de
       }
     }
     await page.screenshot({ path: path.join(evidence, 'composer-after-enable-disable.png') })
+    if (staleArchiveId) {
+      await page.locator('#archived-sessions').click()
+      await search.fill(staleArchiveId)
+      const staleRemove = page.getByRole('button', { name: new RegExp(`^(Delete permanently|永久删除) ${staleArchiveId}$`) })
+      await staleRemove.click()
+      const staleDialog = page.getByRole('dialog').filter({ hasText: /永久删除|Permanently/ }).last()
+      await staleDialog.getByRole('button', { name: /^(取消|Cancel)$/ }).last().click()
+      await staleRemove.waitFor()
+      await staleRemove.click()
+      const deleted = page.waitForResponse(r => new URL(r.url()).pathname === '/plugins/dsh-session-delete/delete' && r.request().method() === 'POST')
+      await staleDialog.getByRole('button', { name: /^(确认永久删除|Confirm permanent deletion)$/ }).click()
+      const response = await deleted
+      assert.equal(response.status(), 200)
+      const body = await response.json()
+      assert.equal(body.value.alreadyAbsent, true)
+      assert.equal(body.value.archiveReconciled, true)
+      await staleRemove.waitFor({ state: 'hidden' })
+      await page.screenshot({ path: path.join(evidence, 'stale-archive-removed.png') })
+      await page.getByRole('button', { name: /^(Close|关闭)$/ }).last().click()
+    }
     assert.deepEqual(errors, [], 'no swallowed overlay or React errors')
     return { ok: true, imageAnnotation: true, draftPreserved: true, sessionDeleteCancel: true, archiveRestore: true, confirmedDelete: confirmDelete, pluginEnableDisable: true, errors }
   } catch (error) {
@@ -173,6 +199,14 @@ export async function verifyNativeDefaultPlugins(root, playwrightManifest) {
   assert.match(`${seed.stdout ?? ''}\n${seed.stderr ?? ''}`, /MISSING_CREDENTIAL/, 'keyless synthetic session was created')
   const results = []
   for (const theme of ['dark', 'light']) {
+    const staleArchiveId = process.env.DSH_CHAT_TEST_STALE_ARCHIVE === '1' ? `session-acceptance-absent-${theme}` : undefined
+    if (staleArchiveId) {
+      const registryFile = path.join(root, 'data/dsh-home/storages/workspace.json')
+      const registry = JSON.parse(await readFile(registryFile, 'utf8'))
+      assert.ok(Array.isArray(registry.global?.archivedSessionIds))
+      registry.global.archivedSessionIds = [...new Set([...registry.global.archivedSessionIds, staleArchiveId])]
+      await writeFile(registryFile, JSON.stringify(registry))
+    }
     const evidence = path.join(root, 'acceptance/default-plugin-ui', theme)
     await mkdir(evidence, { recursive: true })
     await mkdir(path.join(root, 'data/dsh-home'), { recursive: true })
@@ -197,7 +231,7 @@ export async function verifyNativeDefaultPlugins(root, playwrightManifest) {
       await page.waitForURL(/^http:\/\/127\.0\.0\.1:/, { timeout: 90000 })
       assert.equal(await page.evaluate(() => Boolean(window.chrome?.webview)), true, 'this is the native WebView, not a substitute browser')
       await page.waitForFunction(() => document.querySelector('[data-dsh-boot]') === null)
-      results.push({ theme, ...(await verifyDefaultPluginUi(page, evidence, title, { confirmDelete: theme === 'light' })) })
+      results.push({ theme, staleArchiveId, ...(await verifyDefaultPluginUi(page, evidence, title, { confirmDelete: theme === 'light', staleArchiveId })) })
     } finally {
       await browser?.close().catch(() => {})
       try {
@@ -205,7 +239,11 @@ export async function verifyNativeDefaultPlugins(root, playwrightManifest) {
       } finally { if (child.exitCode === null) child.kill() }
     }
   }
-  const report = { ok: true, portableVersion: components.portableVersion, dshVersion: components.dshVersion, defaultPlugins: components.defaultPlugins, results }
+  const installedPlugins = await Promise.all(['dsh-chat-manager', 'dsh-image-viewer'].map(async name => {
+    const manifest = JSON.parse(await readFile(path.join(root, 'data/dsh-home/profiles/web/node_modules', name, 'package.json'), 'utf8'))
+    return { package: name, version: manifest.version }
+  }))
+  const report = { ok: true, portableVersion: components.portableVersion, dshVersion: components.dshVersion, defaultPlugins: components.defaultPlugins, installedPlugins, results }
   await writeFile(path.join(root, 'acceptance/default-plugin-ui/result.json'), JSON.stringify(report, null, 2))
   return report
 }
