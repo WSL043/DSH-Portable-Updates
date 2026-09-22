@@ -11,7 +11,7 @@ const exec = promisify(execFile)
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 /** Operate real official controls; never remove onboarding DOM or patch the host. */
-export async function verifyDefaultPluginUi(page, evidence) {
+export async function verifyDefaultPluginUi(page, evidence, title = 'Portable default plugin qualification session', { confirmDelete = false } = {}) {
   const errors = []
   const onError = error => errors.push(error.message)
   const onConsole = message => {
@@ -25,7 +25,16 @@ export async function verifyDefaultPluginUi(page, evidence) {
       const button = page.getByRole('button', { name })
       if (await button.waitFor({ state: 'visible', timeout: 2500 }).then(() => true, () => false)) await button.click()
     }
-    const selected = page.getByRole('treeitem').filter({ hasText: 'Portable default plugin qualification' }).last()
+    await page.getByRole('button', { name: /^(Plugins|插件)$/ }).first().click()
+    for (const packageName of ['dsh-chat-manager', 'dsh-image-viewer']) {
+      const toggle = page.locator(`[data-plugin-package="${packageName}"]`).getByRole('switch')
+      await toggle.waitFor()
+      if (await toggle.getAttribute('aria-checked') !== 'true') {
+        await toggle.click()
+        await page.waitForFunction(packageName => document.querySelector(`[data-plugin-package="${packageName}"] [role="switch"]`)?.getAttribute('aria-checked') === 'true', packageName)
+      }
+    }
+    const selected = page.getByRole('treeitem').filter({ hasText: title }).last()
     if (!await selected.isVisible()) {
       const ungrouped = page.getByText(/^(未分组|Ungrouped)$/, { exact: true })
       if (await ungrouped.isVisible()) await ungrouped.click()
@@ -74,8 +83,65 @@ export async function verifyDefaultPluginUi(page, evidence) {
     assert.equal(await input.isEditable(), true, 'cancelled deletion leaves composer editable')
     assert.ok((await input.innerText()).includes('Qualification annotation'), 'cancel preserves the draft')
     await page.screenshot({ path: path.join(evidence, 'composer-after-plugin-actions.png') })
+    await row.hover()
+    await row.getByRole('button', { name: /Session actions|会话.*操作/ }).click()
+    await page.getByRole('menuitem', { name: /^(Archive session|归档会话)$/ }).click()
+    await row.waitFor({ state: 'hidden' })
+    // Archiving the active session first exposes the new-session onboarding in
+    // a fresh profile. Dismiss its real buttons before exercising the sidebar.
+    for (const name of [/^(继续|Continue)$/, /^(稍后配置|Configure later)$/]) {
+      const button = page.getByRole('button', { name })
+      if (await button.waitFor({ state: 'visible', timeout: 2500 }).then(() => true, () => false)) await button.click()
+    }
+    await page.locator('#archived-sessions').click()
+    const search = page.getByRole('searchbox', { name: /^(Search archived sessions|搜索已归档会话)$/ })
+    await search.waitFor()
+    assert.equal(await page.getByRole('dialog', { name: /^(Archived sessions|归档会话)$/ }).count(), 0, 'archive shortcut opens official settings without a second popup')
+    await search.fill(title)
+    const restore = page.getByRole('button', { name: new RegExp(`^(Unarchive|取消归档) ${title}$`) })
+    const remove = page.getByRole('button', { name: new RegExp(`^(Delete permanently|永久删除) ${title}$`) })
+    await restore.waitFor()
+    assert.notEqual(await remove.evaluate(e => getComputedStyle(e).color), await restore.evaluate(e => getComputedStyle(e).color), 'destructive action has a distinct color')
+    await page.screenshot({ path: path.join(evidence, 'archive-settings.png') })
+    const restored = page.waitForResponse(r => new URL(r.url()).pathname === '/plugins/dsh-session-delete/restore' && r.request().method() === 'POST')
+    await restore.click()
+    const response = await restored
+    assert.equal(response.status(), 200)
+    assert.equal((await response.json()).ok, true)
+    await restore.waitFor({ state: 'hidden' })
+    await page.getByRole('button', { name: /^(Close|关闭)$/ }).last().click()
+    await search.waitFor({ state: 'hidden' })
+    await selected.click()
+    await input.fill('Composer remains usable after archive restoration')
+    if (confirmDelete) {
+      await selected.hover()
+      await selected.getByRole('button', { name: /Session actions|会话.*操作/ }).click()
+      await page.getByRole('menuitem', { name: /^(永久删除|删除会话|Delete session|Delete permanently)$/ }).click()
+      const deleted = page.waitForResponse(r => new URL(r.url()).pathname === '/plugins/dsh-session-delete/delete' && r.request().method() === 'POST')
+      await dialog.getByRole('button', { name: /^(永久删除|Delete permanently|确认永久删除|Confirm permanent deletion)$/ }).click()
+      const deletion = await deleted
+      assert.equal(deletion.status(), 200)
+      assert.equal((await deletion.json()).ok, true)
+      await selected.waitFor({ state: 'hidden' })
+      await dialog.waitFor({ state: 'hidden' })
+    }
+    for (const packageName of ['dsh-chat-manager', 'dsh-image-viewer']) {
+      for (const enabled of [false, true]) {
+        const configureLater = page.getByRole('button', { name: /^(稍后配置|Configure later)$/ })
+        if (await configureLater.waitFor({ state: 'visible', timeout: 2500 }).then(() => true, () => false)) await configureLater.click()
+        await page.getByRole('button', { name: /^(Plugins|插件)$/ }).first().click()
+        const toggle = page.locator(`[data-plugin-package="${packageName}"]`).getByRole('switch')
+        await toggle.waitFor()
+        if (await toggle.getAttribute('aria-checked') !== String(enabled)) await toggle.click()
+        await page.waitForFunction(({ packageName, enabled }) => document.querySelector(`[data-plugin-package="${packageName}"] [role="switch"]`)?.getAttribute('aria-checked') === String(enabled), { packageName, enabled })
+        await page.getByRole('button', { name: /^(New session|新建会话|新会话)$/i }).first().click()
+        await input.fill(`Composer check after ${packageName} ${enabled}`)
+        assert.equal(await input.isEditable(), true)
+      }
+    }
+    await page.screenshot({ path: path.join(evidence, 'composer-after-enable-disable.png') })
     assert.deepEqual(errors, [], 'no swallowed overlay or React errors')
-    return { ok: true, imageAnnotation: true, draftPreserved: true, sessionDeleteCancel: true, errors }
+    return { ok: true, imageAnnotation: true, draftPreserved: true, sessionDeleteCancel: true, archiveRestore: true, confirmedDelete: confirmDelete, pluginEnableDisable: true, errors }
   } catch (error) {
     await page.screenshot({ path: path.join(evidence, 'failure.png') }).catch(() => {})
     await writeFile(path.join(evidence, 'errors.json'), JSON.stringify({ error: String(error), errors }, null, 2))
@@ -94,11 +160,12 @@ export async function verifyNativeDefaultPlugins(root, playwrightManifest) {
   const fixtureEnv = { ...process.env, DSH_PORTABLE_STATE_ROOT: root, DSH_PORTABLE_ENVIRONMENT: 'default',
     DSH_HOME: path.join(root, 'data/dsh-home'), DSH_TELEMETRY_MODE: 'DISABLED' }
   const seedEnv = { ...fixtureEnv }
+  const title = `Portable qualification ${Date.now()}`
   for (const key of Object.keys(seedEnv)) if (/API_KEY|TOKEN|SECRET/i.test(key)) delete seedEnv[key]
   let seed
   try {
     seed = await exec(path.join(root, 'runtime/node/node.exe'), [path.join(root, 'launcher/runtime-entry.mjs'),
-      'dsh-cli.mjs', '--profile', 'headless', 'Portable default plugin qualification session'],
+      'dsh-cli.mjs', '--profile', 'headless', title],
     { cwd: root, windowsHide: true, timeout: 90000, env: seedEnv })
   } catch (error) { seed = error }
   // A clean, keyless disposable product persists the synthetic prompt, but must
@@ -130,7 +197,7 @@ export async function verifyNativeDefaultPlugins(root, playwrightManifest) {
       await page.waitForURL(/^http:\/\/127\.0\.0\.1:/, { timeout: 90000 })
       assert.equal(await page.evaluate(() => Boolean(window.chrome?.webview)), true, 'this is the native WebView, not a substitute browser')
       await page.waitForFunction(() => document.querySelector('[data-dsh-boot]') === null)
-      results.push({ theme, ...(await verifyDefaultPluginUi(page, evidence)) })
+      results.push({ theme, ...(await verifyDefaultPluginUi(page, evidence, title, { confirmDelete: theme === 'light' })) })
     } finally {
       await browser?.close().catch(() => {})
       try {
