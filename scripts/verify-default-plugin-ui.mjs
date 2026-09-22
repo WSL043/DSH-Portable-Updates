@@ -24,8 +24,13 @@ async function dismissOnboarding(page) {
     const action = dialog.getByRole('button', {
       name: /^(继续|Continue|稍后配置|Configure later|Set up later)$/,
     }).first()
+    const currentDialog = await dialog.elementHandle()
     await action.click()
-    await dialog.waitFor({ state: 'hidden' })
+    // A different onboarding dialog may appear immediately. Wait for the
+    // exact element we just acted on, not a .last() locator that now points
+    // at the next dialog in the sequence.
+    await currentDialog.waitForElementState('hidden')
+    await currentDialog.dispose()
   }
   assert.equal(await visibleOnboarding(page), null, 'known onboarding dialog should close before plugin actions')
 }
