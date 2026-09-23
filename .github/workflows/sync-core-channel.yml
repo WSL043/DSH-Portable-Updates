@@ -142,15 +142,20 @@ jobs:
         if: steps.discovery.outputs.publish == 'true'
         id: plugin-preflight
         run: node update-channel/scripts/preflight-adapters.mjs --default-peers-only portable-source resolved-core/lock.json
+      - name: Record a compatibility hold without starting a build
+        if: steps.plugin-preflight.outputs.status == 'blocked'
+        run: |
+          jq '.publish = false | .status = "blocked"' selection.json > selection.tmp.json
+          mv selection.tmp.json selection.json
       - uses: actions/checkout@v7
-        if: steps.discovery.outputs.publish == 'true'
+        if: steps.discovery.outputs.publish == 'true' && steps.plugin-preflight.outputs.status == 'success'
         with:
           repository: deepseek-ai/deepseek-harness
           ref: ${{ steps.discovery.outputs.commit }}
           path: official-plan
       - name: Resolve the official publishable package membership
         id: plan
-        if: steps.discovery.outputs.publish == 'true'
+        if: steps.discovery.outputs.publish == 'true' && steps.plugin-preflight.outputs.status == 'success'
         env:
           SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
         run: |
@@ -641,7 +646,7 @@ jobs:
           SELECTED: ${{ needs.resolve.outputs.publish }}
           CORE_TAG: ${{ needs.resolve.outputs.update_tag }}
           RESOLVE_RESULT: ${{ needs.resolve.result }}
-          PREFLIGHT_RESULT: ${{ needs.preview-runtime.outputs.adapter_status }}
+          PREFLIGHT_RESULT: ${{ needs.resolve.outputs.plugin_status || needs.preview-runtime.outputs.adapter_status }}
           BUILD_RESULT: ${{ needs.build.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
         run: node scripts/report-core-result.mjs
@@ -693,14 +698,14 @@ jobs:
           SOURCE_SHA="${SOURCE_SHA:-$RESOLVED_SOURCE_SHA}"
           ATTEMPTED_AT="$(jq -r '.attemptedAt // empty' state/selection.json)"
           ATTEMPTED_AT="${ATTEMPTED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-          if [[ "$RESOLVE_RESULT" = success && "$PUBLISH_REQUIRED" != true ]]; then
+          if [[ "$ADAPTER_STATUS" = blocked || "${{ needs.resolve.outputs.plugin_status }}" = blocked ]]; then
+            STATUS=blocked
+            RETRY_AFTER=''
+          elif [[ "$RESOLVE_RESULT" = success && "$PUBLISH_REQUIRED" != true ]]; then
             STATUS=success
             RETRY_AFTER=''
           elif [[ "$RESOLVE_RESULT" = success && "$PREVIEW_RESULT" = success && "$BUILD_RESULT" = success && "$PUBLISH_RESULT" = success ]]; then
             STATUS=success
-            RETRY_AFTER=''
-          elif [[ "$ADAPTER_STATUS" = blocked || "${{ needs.resolve.outputs.plugin_status }}" = blocked ]]; then
-            STATUS=blocked
             RETRY_AFTER=''
           else
             STATUS=failed

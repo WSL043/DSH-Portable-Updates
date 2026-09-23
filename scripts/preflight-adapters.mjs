@@ -93,5 +93,7 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
   if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY,
     `\nCore integration preflight: **${result.status}**${result.adapter ? ` (${result.adapter}) — ${result.reason}` : ''}\n`)
   console.log(JSON.stringify(result))
-  if (result.status !== 'success') process.exitCode = 1
+  // A known peer mismatch is a qualified hold, not a broken workflow. The
+  // caller records it in selection.json and the channel qualification state.
+  if (result.status !== 'success' && !(peersOnly && result.status === 'blocked')) process.exitCode = 1
 }
