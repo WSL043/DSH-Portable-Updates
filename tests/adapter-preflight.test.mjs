@@ -13,7 +13,9 @@ test('the shipped native-slot chat client cannot qualify a host without that slo
 
 test('core intake blocks a candidate whose published default plugins exclude that DSH version', async () => {
   const lock = { defaultPlugins: { chatManager: { package: 'dsh-chat-manager', version: '1.5.1' } } }
-  const plugin = { name: 'dsh-chat-manager', version: '1.5.1', peerDependencies: {
+  const plugin = { name: 'dsh-chat-manager', version: '1.5.1', peerDependenciesMeta: {
+    '@deepseek-ai/dsh-client-ui-conversation': { optional: true },
+  }, peerDependencies: {
     '@deepseek-ai/dsh-client-ui-conversation': '0.1.7-alpha.1',
   } }
   const manifests = await fetchPinnedDefaultPluginManifests(lock, async () => ({ ok: true, json: async () => plugin }))

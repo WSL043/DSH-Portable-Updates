@@ -27,7 +27,9 @@ export function checkDefaultPluginPeers(lock, manifests, dshVersion, satisfies) 
         reason: `Pinned plugin metadata could not be verified: ${pin.package}@${pin.version}.` }
     }
     for (const [peer, range] of Object.entries(manifest.peerDependencies ?? {})) {
-      if (!peer.startsWith('@deepseek-ai/dsh-') || manifest.peerDependenciesMeta?.[peer]?.optional === true) continue
+      // Optional means the host may omit this peer, not that a present, mismatched
+      // DSH client API is compatible. Portable's runtime guard checks it too.
+      if (!peer.startsWith('@deepseek-ai/dsh-')) continue
       if (typeof range !== 'string' || !satisfies(dshVersion, range, { includePrerelease: true })) {
         return { status: 'blocked', adapter: 'default-plugin-peers',
           reason: `${pin.package}@${pin.version} requires ${peer} ${range}; candidate core is ${dshVersion}. Publish and qualify a compatible default plugin before delivering this core.` }
@@ -48,6 +50,14 @@ export async function fetchPinnedDefaultPluginManifests(lock, request = fetch) {
   return manifests
 }
 
+export async function preflightPinnedDefaultPlugins(root, lockFile) {
+  const candidate = JSON.parse(await readFile(lockFile, 'utf8'))
+  const product = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'))
+  const productLock = JSON.parse(await readFile(path.join(root, product.version.includes('-') ? 'upstream.preview.lock.json' : 'upstream.lock.json'), 'utf8'))
+  const semver = createRequire(path.resolve(root, 'app/package.json'))('semver')
+  return checkDefaultPluginPeers(productLock, await fetchPinnedDefaultPluginManifests(productLock), candidate.dsh.version, semver.satisfies)
+}
+
 export function preflightAdapters(root, app, run = spawnSync) {
   for (const adapter of ADAPTERS) {
     const result = run(process.execPath, [path.resolve(root, 'scripts', `patch-${adapter}.mjs`), path.resolve(app)],
@@ -65,24 +75,23 @@ export function preflightAdapters(root, app, run = spawnSync) {
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
-  const [root, app, lockFile] = process.argv.slice(2)
+  const [first, second, third] = process.argv.slice(2)
+  const peersOnly = first === '--default-peers-only'
+  const [root, app, lockFile] = peersOnly ? [second, null, third] : [first, second, third]
   let result = { status: 'success' }
-  if (lockFile) {
+  if (peersOnly) {
+    result = await preflightPinnedDefaultPlugins(root, lockFile)
+  } else if (lockFile) {
     const lock = JSON.parse(await readFile(lockFile, 'utf8'))
-    const version = lock.dsh?.version
     const product = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'))
     const productLock = JSON.parse(await readFile(path.join(root, product.version.includes('-') ? 'upstream.preview.lock.json' : 'upstream.lock.json'), 'utf8'))
-    const semver = createRequire(path.join(root, 'app/package.json'))('semver')
-    result = checkDefaultPluginPeers(productLock, await fetchPinnedDefaultPluginManifests(productLock), version, semver.satisfies)
-    if (result.status === 'success') {
-      const client = await readFile(path.join(app, 'node_modules/@deepseek-ai/dsh-client-ui-workspace/lib/client.js'), 'utf8')
-      result = checkDefaultPluginCapabilities(productLock, client)
-    }
+    const client = await readFile(path.join(app, 'node_modules/@deepseek-ai/dsh-client-ui-workspace/lib/client.js'), 'utf8')
+    result = checkDefaultPluginCapabilities(productLock, client)
   }
-  if (result.status === 'success') result = preflightAdapters(root, app)
+  if (!peersOnly && result.status === 'success') result = preflightAdapters(root, app)
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `status=${result.status}\n`)
   if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY,
-    `\nAdapter preflight: **${result.status}**${result.adapter ? ` (${result.adapter}) — ${result.reason}` : ''}\n`)
+    `\nCore integration preflight: **${result.status}**${result.adapter ? ` (${result.adapter}) — ${result.reason}` : ''}\n`)
   console.log(JSON.stringify(result))
   if (result.status !== 'success') process.exitCode = 1
 }
