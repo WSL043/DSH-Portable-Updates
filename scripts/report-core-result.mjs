@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url'
 
 export function coreResult({ channel, version, source, selected, resolve, preflight, build, publish, tag, reason }) {
   const outcome = publish === 'success' ? 'Published / 已发布'
-    : preflight === 'blocked' ? 'Needs a compatible baseline / 等待适配'
+    : preflight === 'blocked' ? 'Qualification blocked / 验收受阻'
     : resolve !== 'success' ? 'Source discovery failed / 上游来源核验失败'
     : selected !== 'true' ? 'No eligible work / 无需重新验证的版本'
     : 'Not published / 尚未发布'
@@ -12,7 +12,7 @@ export function coreResult({ channel, version, source, selected, resolve, prefli
     + `- Core: ${version || 'none selected'}\n- Portable source: ${source || 'unresolved'}\n`
     + `- Resolve: ${resolve}; preflight: ${preflight || 'not reached'}; platforms: ${build}; publish: ${publish}\n`
     + (preflight === 'blocked' && reason ? `- First blocking gate: ${String(reason).replace(/[\r\n\t]/g, ' ').slice(0, 400)}\n` : '')
-    + (preflight === 'blocked' ? '- This hold does not establish that later compatibility and historical-session migration gates pass.\n' : '')
+    + (preflight === 'blocked' ? '- This hold does not establish that later qualification gates pass.\n' : '')
     + (publish === 'success' ? `- [Published channel](https://github.com/WSL043/DSH-Portable-Updates/releases/tag/${encodeURIComponent(tag)})\n` : '')
     + '\nHistorical backfill and the newest core are qualified separately. A failed historical version does not undo a published core.\n'
 }

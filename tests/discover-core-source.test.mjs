@@ -179,6 +179,7 @@ test('source packing, platform builds and publication all consume the discovered
   assert.equal(workflow.split('run: cp resolved-core/lock.json "$LOCK_FILE"').length - 1, 3)
   assert.match(workflow, /publish: \$\{\{ steps.selection.outputs.publish \}\}/)
   assert.match(workflow, /needs: \[resolve, build\]/)
+  assert.match(workflow, /needs: \[resolve, preview-runtime\]\s+if: needs\.resolve\.result == 'success' && needs\.preview-runtime\.result == 'success'/)
   assert.match(workflow, /releases\/latest/)
   assert.match(workflow, /git\/ref\/tags\/\$RELEASE_TAG/)
   assert.match(workflow, /head_sha=\$SOURCE_SHA/)
@@ -186,6 +187,7 @@ test('source packing, platform builds and publication all consume the discovered
   assert.match(workflow, /node update-channel\/scripts\/update-qualification-state\.mjs/)
   assert.match(workflow, /publish\/official-core\.lock\.json .*publish\/official-core-\*\.lock\.json/)
   assert.match(workflow, /landlockCount/)
+  assert.match(workflow, /Verify released descriptor-v2 migration against the exact packaged core[\s\S]*verify-descriptor-v2-migration\.mjs preflight-app[\s\S]*Reject incompatible adapters before platform fan-out/)
 })
 test('new official candidate is resolved once into an immutable lock without changing Portable source', async t => {
   const root=await mkdtemp(path.join(os.tmpdir(),'core-discovery-'))
