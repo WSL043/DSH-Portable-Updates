@@ -41,6 +41,7 @@ jobs:
       publish: ${{ steps.selection.outputs.publish }}
       version: ${{ steps.selection.outputs.version }}
       selection_status: ${{ steps.selection.outputs.status }}
+      selection_reason: ${{ steps.selection.outputs.reason }}
       update_tag: ${{ steps.source.outputs.update_tag }}
       source_sha: ${{ steps.source.outputs.source_sha }}
       plugin_status: ${{ steps.plugin-preflight.outputs.status }}
@@ -141,11 +142,11 @@ jobs:
       - name: Block incompatible default plugins before source build
         if: steps.discovery.outputs.publish == 'true'
         id: plugin-preflight
-        run: node update-channel/scripts/preflight-adapters.mjs --default-peers-only portable-source resolved-core/lock.json
+        run: node update-channel/scripts/preflight-adapters.mjs --default-peers-only portable-source resolved-core/lock.json > preflight.json
       - name: Record a compatibility hold without starting a build
         if: steps.plugin-preflight.outputs.status == 'blocked'
         run: |
-          jq '.publish = false | .status = "blocked"' selection.json > selection.tmp.json
+          jq --slurpfile hold preflight.json '.publish = false | .status = "blocked" | .adapter = $hold[0].adapter | .reason = $hold[0].reason' selection.json > selection.tmp.json
           mv selection.tmp.json selection.json
       - uses: actions/checkout@v7
         if: steps.discovery.outputs.publish == 'true' && steps.plugin-preflight.outputs.status == 'success'
@@ -182,9 +183,9 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -f selection.json ]]; then
-            jq -r '"version=" + (.version // ""), "publish=" + ((.publish // false) | tostring), "status=" + (.status // "unknown")' selection.json >> "$GITHUB_OUTPUT"
+            jq -r '"version=" + (.version // ""), "publish=" + ((.publish // false) | tostring), "status=" + (.status // "unknown"), "reason=" + ((.reason // "") | gsub("[\r\n]"; " ") | .[0:400])' selection.json >> "$GITHUB_OUTPUT"
           else
-            printf 'version=\npublish=false\nstatus=unresolved\n' >> "$GITHUB_OUTPUT"
+            printf 'version=\npublish=false\nstatus=unresolved\nreason=\n' >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/upload-artifact@v7
         if: always()
@@ -647,6 +648,7 @@ jobs:
           CORE_TAG: ${{ needs.resolve.outputs.update_tag }}
           RESOLVE_RESULT: ${{ needs.resolve.result }}
           PREFLIGHT_RESULT: ${{ needs.resolve.outputs.plugin_status || needs.preview-runtime.outputs.adapter_status }}
+          HOLD_REASON: ${{ needs.resolve.outputs.selection_reason }}
           BUILD_RESULT: ${{ needs.build.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
         run: node scripts/report-core-result.mjs
