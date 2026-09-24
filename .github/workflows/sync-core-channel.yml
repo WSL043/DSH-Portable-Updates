@@ -199,7 +199,8 @@ jobs:
     if: needs.resolve.result == 'success' && needs.resolve.outputs.publish == 'true'
     runs-on: ubuntu-latest
     outputs:
-      adapter_status: ${{ steps.adapter-preflight.outputs.status }}
+      adapter_status: ${{ steps.adapter-preflight.outputs.status || steps.descriptor-v2.outputs.status }}
+      adapter_reason: ${{ steps.descriptor-v2.outputs.reason }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -254,6 +255,13 @@ jobs:
         run: |
           node update-channel/scripts/bind-market-host.mjs . resolved-core/members.json
           node scripts/stage-preview-runtime.mjs --packed-root upstream/dist --output preflight-app --lock-file '${{ needs.resolve.outputs.lock_file }}'
+      - name: Verify released descriptor-v2 migration against the exact packaged core
+        id: descriptor-v2
+        continue-on-error: true
+        run: node update-channel/scripts/verify-descriptor-v2-migration.mjs preflight-app
+      - name: Stop before platform builds when descriptor-v2 cannot be restored
+        if: always() && steps.descriptor-v2.outcome == 'failure'
+        run: exit 1
       - name: Reject incompatible adapters before platform fan-out
         id: adapter-preflight
         run: node update-channel/scripts/preflight-adapters.mjs . preflight-app resolved-core/lock.json
@@ -269,7 +277,7 @@ jobs:
 
   build:
     needs: [resolve, preview-runtime]
-    if: needs.resolve.result == 'success' && needs.resolve.outputs.publish == 'true'
+    if: needs.resolve.result == 'success' && needs.preview-runtime.result == 'success' && needs.resolve.outputs.publish == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -647,8 +655,8 @@ jobs:
           SELECTED: ${{ needs.resolve.outputs.publish }}
           CORE_TAG: ${{ needs.resolve.outputs.update_tag }}
           RESOLVE_RESULT: ${{ needs.resolve.result }}
-          PREFLIGHT_RESULT: ${{ needs.resolve.outputs.plugin_status || needs.preview-runtime.outputs.adapter_status }}
-          HOLD_REASON: ${{ needs.resolve.outputs.selection_reason }}
+          PREFLIGHT_RESULT: ${{ needs.preview-runtime.outputs.adapter_status || needs.resolve.outputs.plugin_status }}
+          HOLD_REASON: ${{ needs.preview-runtime.outputs.adapter_reason || needs.resolve.outputs.selection_reason }}
           BUILD_RESULT: ${{ needs.build.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
         run: node scripts/report-core-result.mjs

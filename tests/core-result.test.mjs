@@ -12,9 +12,9 @@ test('only completed publication claims delivery and links its channel', () => {
 })
 test('summaries distinguish blocked, absent work and discovery failure', () => {
   const blocked = coreResult({...base,publish:'skipped',preflight:'blocked',reason:'dsh-image-viewer excludes 0.1.7-rc.2\nnext line'})
-  assert.match(blocked,/等待适配/)
+  assert.match(blocked,/验收受阻/)
   assert.match(blocked,/First blocking gate: dsh-image-viewer excludes 0\.1\.7-rc\.2 next line/)
-  assert.match(blocked,/historical-session migration gates/)
+  assert.match(blocked,/later qualification gates/)
   assert.doesNotMatch(blocked,/0\.1\.7-rc\.2\nnext line/)
   assert.match(coreResult({...base,publish:'skipped',selected:'false'}),/无需重新验证/)
   assert.match(coreResult({...base,publish:'skipped',selected:'false',resolve:'failure'}),/来源核验失败/)
