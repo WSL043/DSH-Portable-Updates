@@ -214,6 +214,15 @@ export async function verifyDefaultPluginUi(page, evidence, title = 'Portable de
   }
 }
 
+export async function seedStaleArchive(root, id) {
+  const registryFile = path.join(root, 'data/dsh-home/storages/workspace.json')
+  const registry = JSON.parse(await readFile(registryFile, 'utf8'))
+  assert.ok(Array.isArray(registry.global?.archivedSessionIds))
+  registry.global.archivedSessionIds = [...new Set([...registry.global.archivedSessionIds, id])]
+  await mkdir(path.dirname(registryFile), { recursive: true })
+  await writeFile(registryFile, JSON.stringify(registry))
+}
+
 export async function verifyNativeDefaultPlugins(root, playwrightManifest) {
   assert.equal(process.platform, 'win32', 'native WebView2 qualification requires Windows')
   root = path.resolve(root)
@@ -235,13 +244,12 @@ export async function verifyNativeDefaultPlugins(root, playwrightManifest) {
   assert.match(`${seed.stdout ?? ''}\n${seed.stderr ?? ''}`, /MISSING_CREDENTIAL/, 'keyless synthetic session was created')
   const results = []
   for (const theme of ['dark', 'light']) {
-    const staleArchiveId = process.env.DSH_CHAT_TEST_STALE_ARCHIVE === '1' ? `session-acceptance-absent-${theme}` : undefined
+    // Let the first web launch import the headless session and create its own
+    // workspace registry. Precreating a partial registry suppresses that import.
+    // Add the stale marker only after that host has shut down, before light mode.
+    const staleArchiveId = process.env.DSH_CHAT_TEST_STALE_ARCHIVE === '1' && theme === 'light' ? `session-acceptance-absent-${theme}` : undefined
     if (staleArchiveId) {
-      const registryFile = path.join(root, 'data/dsh-home/storages/workspace.json')
-      const registry = JSON.parse(await readFile(registryFile, 'utf8'))
-      assert.ok(Array.isArray(registry.global?.archivedSessionIds))
-      registry.global.archivedSessionIds = [...new Set([...registry.global.archivedSessionIds, staleArchiveId])]
-      await writeFile(registryFile, JSON.stringify(registry))
+      await seedStaleArchive(root, staleArchiveId)
     }
     const evidence = path.join(root, 'acceptance/default-plugin-ui', theme)
     await mkdir(evidence, { recursive: true })
