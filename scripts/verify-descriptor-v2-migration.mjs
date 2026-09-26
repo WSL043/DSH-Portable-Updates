@@ -4,8 +4,8 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const packageNames = [
-  '@deepseek-ai/dsh-session-format',
-  '@deepseek-ai/dsh-session-format-v0-to-v1',
+  '@deepseek-ai/dsh-session-format-catalog',
+  '@deepseek-ai/dsh-subagent',
 ]
 
 async function loadPackage(appRoot, name) {
@@ -18,34 +18,30 @@ async function loadPackage(appRoot, name) {
 }
 
 export async function verifyDescriptorV2Migration(appRoot) {
-  const [format, legacy] = await Promise.all(packageNames.map(name => loadPackage(appRoot, name)))
-  const catalog = format.createSessionFormatCatalog({
-    currentVersion: 1,
-    codecs: [legacy.releasedV0SessionFormatCodec, legacy.releasedV1SessionFormatCodec],
-    currentEncoder: { encodeHeader: value => value, encodeEvent: value => value },
-    migrations: [legacy.sessionFormatV0ToV1],
-    restoreCurrent: value => value,
-    restoreTransformedCurrent: value => value,
-    restoreCurrentHeader: value => value,
-  })
+  const [format, subagent] = await Promise.all(packageNames.map(name => loadPackage(appRoot, name)))
+  const catalog = format.createSessionFormatCatalogWithChildren([])
   const restore = version => {
     const current = catalog.createRestore({
       type: 'session', version: 0, id: `portable-historical-descriptor-v${version}`,
       createdAt: 1, delegationDepth: 0,
-    }, { recovery: 'strict', validation: 'transformed' })
-    current.decodeRow({ type: 'subagent/descriptor', seq: 0, time: 2,
-      data: { mode: 'one-shot', version, provider: 'fixture-provider' } })
+    }, { recovery: 'strict', validation: 'current' })
+    const input = { type: 'subagent/descriptor', seq: 0, time: 2,
+      data: { mode: 'one-shot', version, provider: 'fixture-provider' } }
+    const before = JSON.stringify(input)
+    current.decodeRow(input)
+    assert.equal(JSON.stringify(input), before, 'migration must not mutate the source event')
     return current.finish()
   }
 
   const v3 = restore(3)
   assert.equal(v3.events[0].data.version, 3)
-  assert.throws(() => restore(4))
+  assert.throws(() => restore(999))
   const v2 = restore(2)
-  assert.equal(v2.header.version, 1)
-  assert.equal(v2.events.length, 1)
-  assert.equal(v2.events[0].data.version, 2)
-  return { status: 'passed', packages: packageNames.map(name => name), fixture: 'released-v0-descriptor-v2' }
+  assert.equal(v2.header.version, catalog.currentVersion)
+  const restored = subagent.foldSubagentDescriptor(v2.events)
+  assert.ok(restored, 'current subagent runtime must recognize the restored descriptor')
+  assert.deepEqual(restored, subagent.foldSubagentDescriptor(v3.events))
+  return { status: 'passed', packages: packageNames.map(name => name), fixture: 'released-v0-descriptor-v2', fullCatalogAndRuntimeFold: true, qualifiesFullHistoricalRecovery: false }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
