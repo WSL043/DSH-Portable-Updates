@@ -77,8 +77,15 @@ export async function verifyDefaultPluginUi(page, evidence, title = 'Portable de
     }
     const selected = page.getByRole('treeitem').filter({ hasText: title }).last()
     if (!await selected.isVisible()) {
+      // The headless fixture belongs to its cwd workspace, which can start collapsed.
+      // Expand real workspace rows through the same UI action a user takes.
+      const workspaces = page.locator('[role="treeitem"][data-row-key^="workspace:"][aria-expanded="false"]')
+      const count = await workspaces.count()
+      for (let index = 0; index < count && !await selected.isVisible(); index += 1) {
+        await clickAfterOnboarding(page, workspaces.first())
+      }
       const ungrouped = page.getByText(/^(未分组|Ungrouped)$/, { exact: true })
-      if (await ungrouped.isVisible()) await clickAfterOnboarding(page, ungrouped)
+      if (!await selected.isVisible() && await ungrouped.isVisible()) await clickAfterOnboarding(page, ungrouped)
     }
     await clickAfterOnboarding(page, selected)
     const later = page.getByRole('button', { name: /^(稍后配置|Configure later)$/ })
