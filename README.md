@@ -26,6 +26,8 @@ If a newer upstream release requires additional adaptation, manually dispatch wi
 
 A separate hourly workflow qualifies cores against the latest **published** Portable release candidate and its successful main build. It publishes to `update-channel-core-{stable|candidate}-{portableVersion}`. New RC clients read their own version's catalog; the legacy stable-shell channels remain unchanged for existing clients. The same five-platform gates apply. A new RC's catalog may be unavailable until qualification finishes; an unpublished main commit is never selected as a shell baseline.
 
+Both shell channels select Native releases by their published manifest, Windows offline ZIP and checksums assets. Electron releases in the same repository are a separate product line and never become a Native core baseline merely because they were published more recently. The exact release tag and successful build checks still apply after selection.
+
 This does not loosen compatibility checks or claim a tested core works on every shell. Version-scoped catalogs retain the evidence boundary while allowing stable Portable and RC users to follow separate release schedules.
 
 Windows core qualification also operates the bundled plugins inside the updated product's hidden native WebView2, in both themes. A synthetic keyless session exercises image annotation and draft return, session deletion confirmation/cancellation and continued input. It records screenshots and catches React/overlay errors that do not emit browser `pageerror`. Merely finding an installed plugin in the package list is not UI acceptance. A failure blocks core publication; the workflow does not change user-installed third-party plugins or bypass compatibility declarations.

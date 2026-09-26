@@ -13,7 +13,7 @@ test('the reusable publisher checks out and tests its own catalog implementation
   assert.match(workflow, /node update-channel\/scripts\/build-core-index\.mjs/)
   assert.match(workflow, /publish\/dsh-core-index-\*\.json/)
   assert.match(workflow, /versions\[\]\.manifestUrl/)
-  assert.match(workflow, /releases\/latest/)
+  assert.match(workflow, /select-native-release\.mjs published-releases\.json "\$SHELL_CHANNEL"/)
   assert.match(workflow, /CURRENT_IS_HIGHEST|TOP_VERSION/)
   assert.match(workflow, /publish\/official-core-\$\{SELECTED_VERSION\}\.lock\.json/)
   assert.match(workflow, /qualification-state:/)

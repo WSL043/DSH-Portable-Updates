@@ -49,6 +49,12 @@ jobs:
       lock_file: ${{ steps.source.outputs.lock_file }}
       fingerprint: ${{ steps.plan.outputs.fingerprint }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          path: update-channel
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.19.0
       - name: Initialize selection record
         env:
           CHANNEL: ${{ inputs.channel }}
@@ -62,6 +68,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CHANNEL: ${{ inputs.channel }}
+          SHELL_CHANNEL: ${{ inputs.shell_channel }}
         run: |
           set -euo pipefail
           case "$CHANNEL" in
@@ -70,12 +77,8 @@ jobs:
             *) echo "Unsupported channel: $CHANNEL" >&2; exit 1 ;;
           esac
 
-          if [ '${{ inputs.shell_channel }}' = candidate ]; then
-            RELEASE_JSON="$(gh api 'repos/WSL043/DSH-Portable/releases?per_page=100' --jq '[.[] | select(.draft == false and .prerelease == true and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-(alpha|beta|rc)\\.[0-9]+$")))] | sort_by(.published_at) | last')"
-          else
-            test '${{ inputs.shell_channel }}' = stable
-            RELEASE_JSON="$(gh api repos/WSL043/DSH-Portable/releases/latest)"
-          fi
+          gh api 'repos/WSL043/DSH-Portable/releases?per_page=100' > published-releases.json
+          RELEASE_JSON="$(node update-channel/scripts/select-native-release.mjs published-releases.json "$SHELL_CHANNEL")"
           RELEASE_TAG="$(jq -r '.tag_name // empty' <<<"$RELEASE_JSON")"
           test -n "$RELEASE_TAG"
           UPDATE_TAG="update-channel-core-$CHANNEL"
@@ -111,15 +114,9 @@ jobs:
           echo "source_version=$SOURCE_VERSION" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
         with:
-          path: update-channel
-      - uses: actions/checkout@v7
-        with:
           repository: WSL043/DSH-Portable
           ref: ${{ steps.source.outputs.source_sha }}
           path: portable-source
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24.19.0
       - name: Discover and lock the newest official core release
         id: discovery
         env:
