@@ -180,7 +180,7 @@ test('source packing, platform builds and publication all consume the discovered
   assert.match(workflow, /publish: \$\{\{ steps.selection.outputs.publish \}\}/)
   assert.match(workflow, /needs: \[resolve, build\]/)
   assert.match(workflow, /needs: \[resolve, preview-runtime\]\s+if: needs\.resolve\.result == 'success' && needs\.preview-runtime\.result == 'success'/)
-  assert.match(workflow, /releases\/latest/)
+  assert.match(workflow, /select-native-release\.mjs published-releases\.json "\$SHELL_CHANNEL"/)
   assert.match(workflow, /git\/ref\/tags\/\$RELEASE_TAG/)
   assert.match(workflow, /head_sha=\$SOURCE_SHA/)
   assert.match(workflow, /resolved-selection-\$\{\{ inputs.channel \}\}/)
