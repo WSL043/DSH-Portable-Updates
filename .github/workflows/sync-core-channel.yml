@@ -5,7 +5,7 @@ on:
     outputs:
       attempted:
         description: Whether a core was selected for qualification in this run
-        value: ${{ jobs.resolve.outputs.publish }}
+        value: ${{ jobs.resolve.outputs.attempted }}
     inputs:
       shell_channel:
         description: Published Portable baseline (stable or candidate)
@@ -38,6 +38,7 @@ jobs:
   resolve:
     runs-on: ubuntu-latest
     outputs:
+      attempted: ${{ steps.discovery.outputs.publish }}
       publish: ${{ steps.selection.outputs.publish }}
       version: ${{ steps.selection.outputs.version }}
       selection_status: ${{ steps.selection.outputs.status }}
