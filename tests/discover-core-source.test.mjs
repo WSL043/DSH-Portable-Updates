@@ -6,6 +6,20 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 const registry = { 'dist-tags': { latest: '0.1.2', alpha: '0.1.3-alpha.2', rc: '0.1.2-rc.2' }, versions: Object.fromEntries(['0.1.2','0.1.2-rc.1','0.1.2-rc.2','0.1.3-alpha.2'].map(v=>[v,{dist:{integrity:'sha512-'+v}}])) }
+
+test('a peer-blocked selection still drains the bounded queue toward older eligible cores', async () => {
+  const channel = await readFile(new URL('../.github/workflows/sync-core-channel.yml', import.meta.url), 'utf8')
+  const queue = await readFile(new URL('../.github/workflows/sync-core.yml', import.meta.url), 'utf8')
+  assert.match(channel, /value: \$\{\{ jobs\.resolve\.outputs\.attempted \}\}/)
+  assert.match(channel, /attempted: \$\{\{ steps\.discovery\.outputs\.publish \}\}/)
+  assert.match(channel, /publish: \$\{\{ steps\.selection\.outputs\.publish \}\}/)
+  assert.match(queue, /needs\.candidate\.outputs\.attempted == 'true'/)
+  const current = { version: '0.1.2-rc.1', npmIntegrity: 'sha512-0.1.2-rc.1' }
+  const state = updateQualificationState([], { sourceSha: 'shell', pipelineSha: 'pipeline',
+    version: '0.1.3-alpha.2', status: 'blocked', attemptedAt: '2026-09-27T16:11:00Z' })
+  assert.equal(selectCoreRelease(registry, 'candidate', current, false,
+    { sourceSha: 'shell', pipelineSha: 'pipeline', state }).version, '0.1.2-rc.2')
+})
 test('stable advances to a final release while candidate selects the newest prerelease', () => {
   const current={version:'0.1.2-rc.1',integrity:'sha512-0.1.2-rc.1'}
   assert.equal(selectCoreRelease(registry,'stable',current).version,'0.1.2')
