@@ -174,6 +174,30 @@ test('accepted-only refresh preserves the published immutable core when newer so
   assert.deepEqual(lock.defaultPlugins,{keep:'current-shell'})
   assert.equal(await readFile(path.join(root,'upstream.preview.lock.json'),'utf8'),original)
 })
+test('accepted-only refresh uses the published core even when the preview source lock is ahead', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'core-published-refresh-'))
+  const published = { version: '0.1.2-rc.1', npmIntegrity: 'sha512-0.1.2-rc.1', reviewedCommit: 'b'.repeat(40) }
+  await writeFile(path.join(root, 'upstream.lock.json'), JSON.stringify({ dsh: published }))
+  await writeFile(path.join(root, 'upstream.preview.lock.json'), JSON.stringify({
+    dsh: { version: '0.1.3-alpha.2', npmIntegrity: 'sha512-0.1.3-alpha.2' },
+    defaultPlugins: { keep: 'current-product' },
+  }))
+  t.mock.method(globalThis, 'fetch', async url => {
+    url = url.split('?')[0]
+    if (url.includes('registry.npmjs.org')) return Response.json(registry)
+    if (url.endsWith('official-core.lock.json')) return Response.json({ dsh: published })
+    if (url.endsWith('qualification-state.json')) return Response.json([])
+    throw new Error(`Accepted refresh must not discover upstream source: ${url}`)
+  })
+  const output = path.join(root, 'resolved/lock.json')
+  const result = await discoverCoreSource({ portableRoot: root, channel: 'candidate', output,
+    selection: path.join(root, 'selection.json'), acceptedOnly: true, rebuild: true })
+  assert.equal(result.version, published.version)
+  const lock = JSON.parse(await readFile(output, 'utf8'))
+  assert.deepEqual(lock.dsh, published)
+  assert.deepEqual(lock.defaultPlugins, { keep: 'current-product' })
+})
+
 test('source packing, platform builds and publication all consume the discovered lock', async () => {
   const workflow = await readFile(new URL('../.github/workflows/sync-core-channel.yml', import.meta.url), 'utf8')
   assert.equal(workflow.split('run: cp resolved-core/lock.json "$LOCK_FILE"').length - 1, 3)

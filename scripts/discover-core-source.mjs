@@ -143,7 +143,11 @@ export async function discoverCoreSource({
   const registry = await get('https://registry.npmjs.org/@deepseek-ai%2Fdsh')
   const accepted = await get(`https://github.com/WSL043/DSH-Portable-Updates/releases/download/${process.env.CORE_CHANNEL_TAG || `update-channel-core-${channel}`}/official-core.lock.json`, true, true)
   const state = await get(`https://github.com/WSL043/DSH-Portable-Updates/releases/download/${process.env.CORE_CHANNEL_TAG || `update-channel-core-${channel}`}/qualification-state.json`, true, true)
-  if (accepted?.dsh && compareVersions(accepted.dsh.version, lock.dsh.version) > 0) lock.dsh = accepted.dsh
+  // A preview source lock can be newer than the last deliverable core. An
+  // accepted-only refresh must use the published core, not retry that rejected
+  // preview merely because its version sorts higher. Selection below still
+  // checks registry integrity, channel policy and the product's minimum core.
+  if (accepted?.dsh && (acceptedOnly || compareVersions(accepted.dsh.version, lock.dsh.version) > 0)) lock.dsh = accepted.dsh
   const selected = selectCoreRelease(registry, channel, lock.dsh, acceptedOnly, {
     baselineVersion: stableLock.dsh.version,
     sourceSha,
