@@ -128,6 +128,7 @@ test('a fully qualified channel has no selected version or build request', () =>
 
 test('upstream provenance failure preserves the selected identity for the failure recorder', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'core-discovery-failure-'))
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '1.0.0-beta.1' }))
   const original = JSON.stringify({ dsh: { version: '0.1.2-rc.1', npmIntegrity: 'sha512-0.1.2-rc.1' } })
   await writeFile(path.join(root, 'upstream.preview.lock.json'), original)
   await writeFile(path.join(root, 'upstream.lock.json'), original)
@@ -153,6 +154,7 @@ test('upstream provenance failure preserves the selected identity for the failur
 
 test('accepted-only refresh preserves the published immutable core when newer source is incompatible', async t => {
   const root=await mkdtemp(path.join(os.tmpdir(),'core-accepted-refresh-'))
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '1.0.0-beta.1' }))
   const published={version:'0.1.3-alpha.2',npmIntegrity:'sha512-0.1.3-alpha.2',reviewedCommit:'b'.repeat(40),packedFamilies:{dsh:251,vendor:9,landlock:1}}
   const original=JSON.stringify({dsh:{version:'0.1.2-rc.1',npmIntegrity:'sha512-0.1.2-rc.1'},defaultPlugins:{keep:'current-shell'}})
   await writeFile(path.join(root,'upstream.preview.lock.json'),original)
@@ -176,11 +178,12 @@ test('accepted-only refresh preserves the published immutable core when newer so
 })
 test('accepted-only refresh uses the published core even when the preview source lock is ahead', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'core-published-refresh-'))
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '0.7.5' }))
   const published = { version: '0.1.2-rc.1', npmIntegrity: 'sha512-0.1.2-rc.1', reviewedCommit: 'b'.repeat(40) }
-  await writeFile(path.join(root, 'upstream.lock.json'), JSON.stringify({ dsh: published }))
+  await writeFile(path.join(root, 'upstream.lock.json'), JSON.stringify({ dsh: published, defaultPlugins: { keep: 'current-product' } }))
   await writeFile(path.join(root, 'upstream.preview.lock.json'), JSON.stringify({
     dsh: { version: '0.1.3-alpha.2', npmIntegrity: 'sha512-0.1.3-alpha.2' },
-    defaultPlugins: { keep: 'current-product' },
+    defaultPlugins: { reject: 'unshipped-preview-plugins' },
   }))
   t.mock.method(globalThis, 'fetch', async url => {
     url = url.split('?')[0]
@@ -215,6 +218,7 @@ test('source packing, platform builds and publication all consume the discovered
 })
 test('new official candidate is resolved once into an immutable lock without changing Portable source', async t => {
   const root=await mkdtemp(path.join(os.tmpdir(),'core-discovery-'))
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '1.0.0-beta.1' }))
   const original=JSON.stringify({dsh:{version:'0.1.2-rc.1',npmIntegrity:'sha512-0.1.2-rc.1'},defaultPlugins:{keep:'exact'}})
   await writeFile(path.join(root,'upstream.preview.lock.json'),original)
   await writeFile(path.join(root,'upstream.lock.json'),original)

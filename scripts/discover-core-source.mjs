@@ -116,6 +116,17 @@ export async function discoverCoreSource({
   const lockFile = channel === 'stable' ? 'upstream.lock.json' : 'upstream.preview.lock.json'
   const lock = JSON.parse(await readFile(path.join(portableRoot, lockFile), 'utf8'))
   const stableLock = JSON.parse(await readFile(path.join(portableRoot, 'upstream.lock.json'), 'utf8'))
+  const product = JSON.parse(await readFile(path.join(portableRoot, 'package.json'), 'utf8'))
+  if (typeof product.version !== 'string' || !/^\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?$/.test(product.version)) {
+    throw new Error('Published Portable product version is invalid')
+  }
+  const productLock = product.version.includes('-')
+    ? JSON.parse(await readFile(path.join(portableRoot, 'upstream.preview.lock.json'), 'utf8'))
+    : stableLock
+  // Core channel and product channel are independent. Qualification must use
+  // the same default plugins as the installed product and its peer preflight.
+  // A stable product's candidate core must not inherit preview-only plugins.
+  lock.defaultPlugins = productLock.defaultPlugins
   const attemptedAt = new Date().toISOString()
   await writeSelection(selection, {
     schemaVersion: 1,
@@ -149,7 +160,7 @@ export async function discoverCoreSource({
   // checks registry integrity, channel policy and the product's minimum core.
   if (accepted?.dsh && (acceptedOnly || compareVersions(accepted.dsh.version, lock.dsh.version) > 0)) lock.dsh = accepted.dsh
   const selected = selectCoreRelease(registry, channel, lock.dsh, acceptedOnly, {
-    baselineVersion: stableLock.dsh.version,
+    baselineVersion: productLock.dsh.version,
     sourceSha,
     pipelineSha,
     state,
