@@ -256,7 +256,13 @@ jobs:
       - name: Verify released descriptor-v2 migration against the exact packaged core
         id: descriptor-v2
         continue-on-error: true
-        run: node update-channel/scripts/verify-descriptor-v2-migration.mjs preflight-app
+        run: |
+          # Match the selected published product's packaging sequence. Its
+          # adapter is version- and digest-bound; newer cores remain unmodified.
+          if test -f scripts/patch-historical-descriptor.mjs; then
+            node scripts/patch-historical-descriptor.mjs preflight-app
+          fi
+          node update-channel/scripts/verify-descriptor-v2-migration.mjs preflight-app
       - name: Stop before platform builds when descriptor-v2 cannot be restored
         if: always() && steps.descriptor-v2.outcome == 'failure'
         run: exit 1
