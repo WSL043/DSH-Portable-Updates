@@ -118,6 +118,8 @@ export async function buildCoreIndex({
     versionedManifestNames.push(name)
   }
   await writeFile(path.join(output, `dsh-core-index-${platform}.json`), `${JSON.stringify(index)}\n`, 'utf8')
+  // The automatic check and version picker must use the same compatible catalog.
+  await writeFile(path.join(output, `dsh-core-update-${platform}.json`), `${JSON.stringify(bounded[0].manifest)}\n`, 'utf8')
   return { index, versionedManifestNames }
 }
 

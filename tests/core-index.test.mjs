@@ -44,6 +44,20 @@ function manifest(version, archive = version, platform = 'windows-x64', {
   }
 }
 
+test('automatic check follows the compatible baseline, while historical backfill preserves its newest core', async (t) => {
+  const output = await mkdtemp(path.join(os.tmpdir(), 'dsh-core-alias-'))
+  t.after(() => rm(output, { recursive: true, force: true }))
+  const current = manifest('0.1.7-alpha.1', 'new-base', 'windows-x64', { portableVersion: '0.7.6' })
+  const old = manifest('0.1.7-alpha.2', 'old-base', 'windows-x64', { portableVersion: '0.7.3' })
+  const first = await buildCoreIndex({ channel: 'candidate', platform: 'windows-x64', currentManifest: current, previousLatestManifest: old, output })
+  const alias = () => readFile(path.join(output, 'dsh-core-update-windows-x64.json'), 'utf8').then(JSON.parse)
+  assert.deepEqual(await alias(), current)
+  await buildCoreIndex({ channel: 'candidate', platform: 'windows-x64',
+    currentManifest: manifest('0.1.6-alpha.1', 'backfill', 'windows-x64', { portableVersion: '0.7.6' }),
+    previousIndex: first.index, previousLatestManifest: current, output })
+  assert.deepEqual(await alias(), current)
+})
+
 test('the first catalog preserves the previous latest core beside the current version', async (t) => {
   const output = await mkdtemp(path.join(os.tmpdir(), 'dsh-core-index-'))
   t.after(() => rm(output, { recursive: true, force: true }))
