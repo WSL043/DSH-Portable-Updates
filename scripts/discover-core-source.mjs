@@ -16,7 +16,17 @@ function stateRecords(value) {
   return []
 }
 
-function cooling(record, now, pipelineSha) {
+export function defaultPeersInputHash(defaultPlugins, checker, dependencyLock) {
+  const canonical = value => Array.isArray(value) ? value.map(canonical)
+    : value && typeof value === 'object'
+      ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value
+  return createHash('sha256').update(JSON.stringify(canonical({ schema: 1, defaultPlugins, checker, dependencyLock }))).digest('hex')
+}
+
+function cooling(record, now, pipelineSha, peersHash) {
+  if (record?.status === 'blocked' && record.adapter === 'default-plugin-peers'
+    && /^[a-f0-9]{64}$/.test(peersHash || '') && /^[a-f0-9]{64}$/.test(record.defaultPeersInputHash || ''))
+    return record.defaultPeersInputHash === peersHash
   if (record?.status === 'blocked' && (!pipelineSha || record.pipelineSha === pipelineSha)) return true
   return record?.status === 'failed'
     && (!pipelineSha || record.pipelineSha === pipelineSha)
@@ -42,6 +52,7 @@ export function selectCoreRelease(registry, channel, current, acceptedOnly = fal
   baselineVersion = current?.version,
   sourceSha = '',
   pipelineSha = '',
+  defaultPeersInputHash: peersHash = '',
   state = [],
   rebuild = false,
   now = Date.now(),
@@ -91,7 +102,7 @@ export function selectCoreRelease(registry, channel, current, acceptedOnly = fal
     const record = records
       .filter(item => item?.sourceSha === sourceSha && item?.version === candidate.version)
       .sort((left, right) => String(right.attemptedAt ?? '').localeCompare(String(left.attemptedAt ?? '')))[0]
-    if (record?.status === 'success' || cooling(record, now, pipelineSha)) continue
+    if (record?.status === 'success' || cooling(record, now, pipelineSha, peersHash)) continue
     return { version: candidate.version, integrity: candidate.integrity, status: 'selected' }
   }
   return { version: null, integrity: null, status: 'skip', reason: 'no-unverified-candidate' }
@@ -127,6 +138,9 @@ export async function discoverCoreSource({
   // the same default plugins as the installed product and its peer preflight.
   // A stable product's candidate core must not inherit preview-only plugins.
   lock.defaultPlugins = productLock.defaultPlugins
+  const peersHash = defaultPeersInputHash(productLock.defaultPlugins,
+    await readFile(new URL('./preflight-adapters.mjs', import.meta.url), 'utf8'),
+    JSON.parse(await readFile(path.join(portableRoot, 'app/package-lock.json'), 'utf8')))
   const attemptedAt = new Date().toISOString()
   await writeSelection(selection, {
     schemaVersion: 1,
@@ -160,6 +174,7 @@ export async function discoverCoreSource({
   // checks registry integrity, channel policy and the product's minimum core.
   if (accepted?.dsh && (acceptedOnly || compareVersions(accepted.dsh.version, lock.dsh.version) > 0)) lock.dsh = accepted.dsh
   const selected = selectCoreRelease(registry, channel, lock.dsh, acceptedOnly, {
+    defaultPeersInputHash: peersHash,
     baselineVersion: productLock.dsh.version,
     sourceSha,
     pipelineSha,
@@ -172,6 +187,7 @@ export async function discoverCoreSource({
     sourceSha: sourceSha || null,
     pipelineSha: pipelineSha || null,
     version: selected.version,
+    defaultPeersInputHash: peersHash,
     publish: Boolean(selected.version),
     status: selected.status,
     reason: selected.reason,

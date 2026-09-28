@@ -710,5 +710,5 @@ jobs:
           gh release download "$TAG" --repo WSL043/DSH-Portable-Updates \
             --pattern qualification-state.json --dir state --clobber || printf '[]\n' > state/qualification-state.json
           node update-channel/scripts/update-qualification-state.mjs \
-            state/qualification-state.json "$SOURCE_SHA" "$VERSION" "$STATUS" "$ATTEMPTED_AT" "$RETRY_AFTER" "$PIPELINE_SHA"
+            state/qualification-state.json "$SOURCE_SHA" "$VERSION" "$STATUS" "$ATTEMPTED_AT" "$RETRY_AFTER" "$PIPELINE_SHA" --selection-file state/selection.json
           gh release upload "$TAG" --repo WSL043/DSH-Portable-Updates state/qualification-state.json --clobber

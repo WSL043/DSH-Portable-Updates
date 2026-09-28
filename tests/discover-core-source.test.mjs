@@ -1,11 +1,33 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { discoverCoreSource, selectCoreRelease } from '../scripts/discover-core-source.mjs'
+import { discoverCoreSource, selectCoreRelease, defaultPeersInputHash } from '../scripts/discover-core-source.mjs'
 import { updateQualificationState } from '../scripts/update-qualification-state.mjs'
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 const registry = { 'dist-tags': { latest: '0.1.2', alpha: '0.1.3-alpha.2', rc: '0.1.2-rc.2' }, versions: Object.fromEntries(['0.1.2','0.1.2-rc.1','0.1.2-rc.2','0.1.3-alpha.2'].map(v=>[v,{dist:{integrity:'sha512-'+v}}])) }
+
+test('peer holds survive unrelated pipeline changes and invalidate only for relevant inputs', () => {
+  const hash = defaultPeersInputHash({ image: '1' }, 'checker', { semver: '7' })
+  const current = { version: '0.1.3-alpha.2', integrity: 'sha512-0.1.3-alpha.2' }
+  const record = { sourceSha: 'shell', pipelineSha: 'old', version: current.version,
+    status: 'blocked', attemptedAt: '2026-09-28T00:00:00Z', adapter: 'default-plugin-peers', defaultPeersInputHash: hash }
+  const options = { sourceSha: 'shell', pipelineSha: 'new', state: [record], defaultPeersInputHash: hash }
+  const select = extra => selectCoreRelease(registry, 'candidate', current, true, { ...options, ...extra }).version
+  assert.equal(select({}), null)
+  for (const changed of [defaultPeersInputHash({ image: '2' }, 'checker', { semver: '7' }),
+    defaultPeersInputHash({ image: '1' }, 'new checker', { semver: '7' }),
+    defaultPeersInputHash({ image: '1' }, 'checker', { semver: '8' })]) {
+    assert.equal(select({ defaultPeersInputHash: changed }), current.version)
+  }
+  assert.equal(select({ sourceSha: 'new-shell' }), current.version)
+  assert.equal(select({ rebuild: true }), current.version)
+  assert.equal(select({ state: [{ ...record, adapter: 'other' }] }), current.version)
+  assert.equal(select({ state: [{ ...record, defaultPeersInputHash: undefined }] }), current.version)
+  const state = updateQualificationState([], record)
+  assert.equal(state[0].defaultPeersInputHash, hash)
+  for (const status of ['success', 'failed']) assert.equal(updateQualificationState(state, { ...record, status })[0].defaultPeersInputHash, undefined)
+})
 
 test('a peer-blocked selection still drains the bounded queue toward older eligible cores', async () => {
   const channel = await readFile(new URL('../.github/workflows/sync-core-channel.yml', import.meta.url), 'utf8')
@@ -142,6 +164,8 @@ test('a fully qualified channel has no selected version or build request', () =>
 
 test('upstream provenance failure preserves the selected identity for the failure recorder', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'core-discovery-failure-'))
+  await mkdir(path.join(root, 'app'), { recursive: true })
+  await writeFile(path.join(root, 'app/package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {} }))
   await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '1.0.0-beta.1' }))
   const original = JSON.stringify({ dsh: { version: '0.1.2-rc.1', npmIntegrity: 'sha512-0.1.2-rc.1' } })
   await writeFile(path.join(root, 'upstream.preview.lock.json'), original)
@@ -168,6 +192,8 @@ test('upstream provenance failure preserves the selected identity for the failur
 
 test('accepted-only refresh preserves the published immutable core when newer source is incompatible', async t => {
   const root=await mkdtemp(path.join(os.tmpdir(),'core-accepted-refresh-'))
+  await mkdir(path.join(root, 'app'), { recursive: true })
+  await writeFile(path.join(root, 'app/package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {} }))
   await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '1.0.0-beta.1' }))
   const published={version:'0.1.3-alpha.2',npmIntegrity:'sha512-0.1.3-alpha.2',reviewedCommit:'b'.repeat(40),packedFamilies:{dsh:251,vendor:9,landlock:1}}
   const original=JSON.stringify({dsh:{version:'0.1.2-rc.1',npmIntegrity:'sha512-0.1.2-rc.1'},defaultPlugins:{keep:'current-shell'}})
@@ -192,6 +218,8 @@ test('accepted-only refresh preserves the published immutable core when newer so
 })
 test('accepted-only refresh uses the published core even when the preview source lock is ahead', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'core-published-refresh-'))
+  await mkdir(path.join(root, 'app'), { recursive: true })
+  await writeFile(path.join(root, 'app/package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {} }))
   await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '0.7.5' }))
   const published = { version: '0.1.2-rc.1', npmIntegrity: 'sha512-0.1.2-rc.1', reviewedCommit: 'b'.repeat(40) }
   await writeFile(path.join(root, 'upstream.lock.json'), JSON.stringify({ dsh: published, defaultPlugins: { keep: 'current-product' } }))
@@ -232,6 +260,8 @@ test('source packing, platform builds and publication all consume the discovered
 })
 test('new official candidate is resolved once into an immutable lock without changing Portable source', async t => {
   const root=await mkdtemp(path.join(os.tmpdir(),'core-discovery-'))
+  await mkdir(path.join(root, 'app'), { recursive: true })
+  await writeFile(path.join(root, 'app/package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {} }))
   await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '1.0.0-beta.1' }))
   const original=JSON.stringify({dsh:{version:'0.1.2-rc.1',npmIntegrity:'sha512-0.1.2-rc.1'},defaultPlugins:{keep:'exact'}})
   await writeFile(path.join(root,'upstream.preview.lock.json'),original)
