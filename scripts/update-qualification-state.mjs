@@ -18,6 +18,9 @@ export function updateQualificationState(value, {
   attemptedAt,
   retryAfter = null,
   pipelineSha,
+  adapter,
+  reason,
+  defaultPeersInputHash,
 }) {
   if (!sourceSha || !version) throw new Error('Qualification state requires sourceSha and version.')
   if (!STATUS.has(status)) throw new Error(`Unsupported qualification status: ${status}`)
@@ -26,7 +29,11 @@ export function updateQualificationState(value, {
     ? retryAfter || new Date(Date.parse(attemptedAt) + 24 * 60 * 60 * 1000).toISOString()
     : null
   const record = { sourceSha, version, status, attemptedAt, retryAfter: effectiveRetryAfter,
-    ...(pipelineSha ? { pipelineSha } : {}) }
+    ...(pipelineSha ? { pipelineSha } : {}),
+    ...(status === 'blocked' && typeof adapter === 'string' ? { adapter } : {}),
+    ...(status === 'blocked' && typeof reason === 'string' ? { reason: reason.slice(0, 2000) } : {}),
+    ...(status === 'blocked' && adapter === 'default-plugin-peers' && /^[a-f0-9]{64}$/.test(defaultPeersInputHash || '')
+      ? { defaultPeersInputHash } : {}) }
   const records = normalizeQualificationState(value)
     .filter(item => !(item.sourceSha === sourceSha && item.version === version))
   records.push(record)
@@ -35,7 +42,10 @@ export function updateQualificationState(value, {
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
   const [filename, sourceSha, version, status, attemptedAt, retryAfter, pipelineSha] = process.argv.slice(2)
+  const selectionFlag = process.argv.indexOf('--selection-file')
+  const selection = selectionFlag < 0 ? {} : JSON.parse(await readFile(process.argv[selectionFlag + 1], 'utf8'))
   const current = await readFile(filename, 'utf8').then(JSON.parse, error => error?.code === 'ENOENT' ? [] : Promise.reject(error))
-  const next = updateQualificationState(current, { sourceSha, version, status, attemptedAt, retryAfter: retryAfter || null, pipelineSha })
+  const next = updateQualificationState(current, { sourceSha, version, status, attemptedAt, retryAfter: retryAfter || null, pipelineSha,
+    adapter: selection.adapter, reason: selection.reason, defaultPeersInputHash: selection.defaultPeersInputHash })
   await writeFile(filename, JSON.stringify(next, null, 2) + '\n', 'utf8')
 }
