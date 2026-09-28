@@ -576,15 +576,8 @@ jobs:
           done
           for platform in windows-x64 macos-arm64 macos-x64 linux-x64 linux-arm64; do
             TOP_VERSION="$(jq -r '.versions[0].version // empty' "publish/dsh-core-index-${platform}.json")"
-            if [[ -z "$PREVIOUS_HIGHEST" ]]; then
-              cp "current/dsh-core-update-${platform}.json" "publish/dsh-core-update-${platform}.json"
-            elif [[ "$TOP_VERSION" = "$VERSION" ]] && version_gte "$VERSION" "$PREVIOUS_HIGHEST"; then
-              cp "current/dsh-core-update-${platform}.json" "publish/dsh-core-update-${platform}.json"
-            else
+            if [[ "$TOP_VERSION" != "$VERSION" ]]; then
               KEEP_PREVIOUS_LATEST=true
-              PREVIOUS="previous/dsh-core-update-${platform}.json"
-              test -s "$PREVIOUS"
-              cp "$PREVIOUS" "publish/dsh-core-update-${platform}.json"
             fi
           done
           cp resolved-core/lock.json "publish/official-core-${SELECTED_VERSION}.lock.json"
