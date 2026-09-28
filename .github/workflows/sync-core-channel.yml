@@ -519,11 +519,6 @@ jobs:
           set -euo pipefail
           test -n "$SELECTED_VERSION"
           mkdir -p publish previous current
-          SEMVER='^[0-9]+\.[0-9]+\.[0-9]+(-((alpha|beta|rc)\.[0-9]+))?$'
-          version_gte() {
-            node --input-type=module -e 'import { compareVersions } from "./update-channel/scripts/build-core-index.mjs"; process.exit(compareVersions(process.argv[1], process.argv[2]) >= 0 ? 0 : 1)' "$1" "$2"
-          }
-          PREVIOUS_HIGHEST=''
           for asset in official-core.lock.json channel-source.json; do
             rm -f "previous/$asset"
             curl --fail --silent --show-error --location \
@@ -547,19 +542,6 @@ jobs:
               "https://github.com/WSL043/DSH-Portable-Updates/releases/download/$CORE_CHANNEL_TAG/dsh-core-index-${platform}.json" \
               --output "$PREVIOUS_INDEX"; then
               rm -f "$PREVIOUS_INDEX"
-            fi
-            if [[ -s "$PREVIOUS_INDEX" ]]; then
-              for candidate in $(jq -r '.versions[]?.version // empty' "$PREVIOUS_INDEX"); do
-                if [[ "$candidate" =~ $SEMVER ]] && { [[ -z "$PREVIOUS_HIGHEST" ]] || version_gte "$candidate" "$PREVIOUS_HIGHEST"; }; then
-                  PREVIOUS_HIGHEST="$candidate"
-                fi
-              done
-            fi
-            if [[ -s "$PREVIOUS" ]]; then
-              candidate="$(jq -r '.component.dshVersion // empty' "$PREVIOUS")"
-              if [[ "$candidate" =~ $SEMVER ]] && { [[ -z "$PREVIOUS_HIGHEST" ]] || version_gte "$candidate" "$PREVIOUS_HIGHEST"; }; then
-                PREVIOUS_HIGHEST="$candidate"
-              fi
             fi
 
             HASH="$(sha256sum "$ZIP" | cut -d' ' -f1)"
