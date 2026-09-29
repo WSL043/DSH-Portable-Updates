@@ -12,13 +12,13 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 async function visibleOnboarding(page) {
   const dialog = page.getByRole('dialog').filter({
-    hasText: /Internal Testing Notice|内测声明|Add an API key to get started|添加 API 密钥|添加一个 API Key/i,
+    hasText: /Internal Testing Notice|内测声明|Preview Notice|预览版说明|Add an API key to get started|添加 API 密钥|添加一个 API Key/i,
   }).last()
   return await dialog.isVisible() ? dialog : null
 }
 
 async function dismissOnboarding(page) {
-  for (let step = 0; step < 3; step++) {
+  for (let step = 0; step < 4; step++) {
     const dialog = await visibleOnboarding(page)
     if (!dialog) return
     const action = dialog.getByRole('button', {
