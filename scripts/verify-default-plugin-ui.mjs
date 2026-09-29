@@ -14,7 +14,17 @@ async function visibleOnboarding(page) {
   const dialog = page.getByRole('dialog').filter({
     hasText: /Internal Testing Notice|内测声明|Preview Notice|预览版说明|Add an API key to get started|添加 API 密钥|添加一个 API Key/i,
   }).last()
-  return await dialog.isVisible() ? dialog : null
+  if (await dialog.isVisible()) return dialog
+  // A newly shipped official notice whose only action is Continue is a pure
+  // acknowledgement; dialogs that offer a choice are never dismissed here.
+  const dialogs = page.getByRole('dialog')
+  for (let index = await dialogs.count() - 1; index >= 0; index--) {
+    const candidate = dialogs.nth(index)
+    if (!await candidate.isVisible()) continue
+    const buttons = candidate.getByRole('button')
+    if (await buttons.count() === 1 && /^(继续|Continue)$/.test((await buttons.first().innerText()).trim())) return candidate
+  }
+  return null
 }
 
 async function dismissOnboarding(page) {
