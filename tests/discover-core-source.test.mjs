@@ -27,6 +27,16 @@ test('failure fallback remains inside the top-three window and never requeues ol
   assert.equal(selectCoreRelease(registry, current, false, { sourceSha: 'shell', pipelineSha: 'pipe', state: allFailed }).version, null)
 })
 
+test('after the newest core qualifies, older window versions are backfilled even below the bundled core', () => {
+  const bundled = { version: '0.2.0', npmIntegrity: 'sha512-0.2.0' }
+  const latestDone = [{ sourceSha: 'shell', version: '0.2.0', status: 'success' }]
+  assert.equal(selectCoreRelease(registry, bundled, false, { baselineVersion: '0.2.0', sourceSha: 'shell', state: latestDone }).version, '0.2.0-rc.2')
+  const twoDone = [...latestDone, { sourceSha: 'shell', version: '0.2.0-rc.2', status: 'success' }]
+  assert.equal(selectCoreRelease(registry, bundled, false, { baselineVersion: '0.2.0', sourceSha: 'shell', state: twoDone }).version, '0.2.0-rc.1')
+  const allDone = [...twoDone, { sourceSha: 'shell', version: '0.2.0-rc.1', status: 'success' }]
+  assert.equal(selectCoreRelease(registry, bundled, false, { baselineVersion: '0.2.0', sourceSha: 'shell', state: allDone }).version, null)
+})
+
 test('deprecated or incomplete top-three versions do not widen discovery to version four', () => {
   const limited = structuredClone(registry)
   limited.versions['0.2.0'].deprecated = 'withdrawn'
