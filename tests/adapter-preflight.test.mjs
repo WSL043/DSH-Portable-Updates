@@ -52,7 +52,7 @@ test('blocked combination stays blocked beyond cooldown but a new baseline or pi
   const state = updateQualificationState([], {sourceSha:'old', pipelineSha:'pipeline', version,
     status:'blocked', attemptedAt:'2026-09-22T00:00:00Z'})
   assert.equal(state[0].retryAfter, null)
-  const choose = options => selectCoreRelease(registry, 'candidate', current, false,
+  const choose = options => selectCoreRelease(registry, current, false,
     {sourceSha:'old',pipelineSha:'pipeline',state,now:Date.parse('2030-01-01'),...options})
   assert.equal(choose({}).version, null)
   assert.equal(choose({sourceSha:'new'}).version, version)
