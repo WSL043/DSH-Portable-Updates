@@ -42,8 +42,9 @@ function latestThreeVersions(registry) {
 function eligibleReleases(registry, topThree, baselineVersion) {
   return topThree
     .map(version => ({ version, metadata: registry?.versions?.[version] }))
-    .filter(({ version, metadata }) => (!baselineVersion || compareVersions(version, baselineVersion) >= 0)
-      && !metadata?.deprecated
+    // Every version in the newest-three window is offered once it qualifies, including ones older than
+    // the core bundled with this Portable release; users may roll back within the window.
+    .filter(({ metadata }) => !metadata?.deprecated
       && typeof metadata?.dist?.integrity === 'string'
       && metadata.dist.integrity.length > 0)
     .map(({ version, metadata }) => ({ version, integrity: metadata.dist.integrity }))
