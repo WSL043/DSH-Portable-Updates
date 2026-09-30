@@ -474,7 +474,7 @@ jobs:
           ref: ${{ needs.resolve.outputs.source_sha }}
       - uses: actions/download-artifact@v8
         with:
-          name: resolved-core-stable
+          name: resolved-core
           path: resolved-core
       - name: Apply the exact discovered official source lock
         shell: bash
