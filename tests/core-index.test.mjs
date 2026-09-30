@@ -1,35 +1,25 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
-import { buildCoreIndex } from '../scripts/build-core-index.mjs'
-
-test('the reusable publisher checks out and tests its own catalog implementation', async () => {
-  const workflow = await readFile(new URL('../.github/workflows/sync-core-channel.yml', import.meta.url), 'utf8')
-  assert.match(workflow, /repository: WSL043\/DSH-Portable-Updates\s+ref: main\s+path: update-channel/)
-  assert.match(workflow, /node --test update-channel\/tests\/\*\.test\.mjs/)
-  assert.match(workflow, /node update-channel\/scripts\/build-core-index\.mjs/)
-  assert.match(workflow, /publish\/dsh-core-index-\*\.json/)
-  assert.match(workflow, /versions\[\]\.manifestUrl/)
-  assert.match(workflow, /select-native-release\.mjs published-releases\.json "\$SHELL_CHANNEL"/)
-  assert.match(workflow, /CURRENT_IS_HIGHEST|TOP_VERSION/)
-  assert.match(workflow, /publish\/official-core-\$\{SELECTED_VERSION\}\.lock\.json/)
-  assert.match(workflow, /qualification-state:/)
-})
+import { buildCoreIndex, compareVersions } from '../scripts/build-core-index.mjs'
 
 function manifest(version, archive = version, platform = 'windows-x64', {
-  portableVersion = '0.6.0-alpha.1',
+  portableVersion = '0.7.6',
   requiredShellSchema = 25,
   requiredShellFingerprint = 'shell-fingerprint',
   targetRuntimeLayout = 'capsule-v1',
   requiredNodeVersion = '24.19.0',
   runtimeLayout = 'capsule-v1',
+  channel = 'stable',
+  releaseChannel = channel,
 } = {}) {
   return {
     schemaVersion: 1,
     updateKind: 'engine',
+    releaseChannel,
     portableVersion,
     requiredShellSchema,
     requiredShellFingerprint,
@@ -39,211 +29,97 @@ function manifest(version, archive = version, platform = 'windows-x64', {
       dshVersion: version,
       requiredNodeVersion,
       runtimeLayout,
-      urls: [`https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-candidate/core-${archive}.zip`],
+      urls: [`https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-${channel}/DSH-Portable-update-${platform}-${version}-${archive}.zip`],
     },
   }
 }
 
-test('automatic check follows the compatible baseline, while historical backfill preserves its newest core', async (t) => {
-  const output = await mkdtemp(path.join(os.tmpdir(), 'dsh-core-alias-'))
-  t.after(() => rm(output, { recursive: true, force: true }))
-  const current = manifest('0.1.7-alpha.1', 'new-base', 'windows-x64', { portableVersion: '0.7.6' })
-  const old = manifest('0.1.7-alpha.2', 'old-base', 'windows-x64', { portableVersion: '0.7.3' })
-  const first = await buildCoreIndex({ channel: 'candidate', platform: 'windows-x64', currentManifest: current, previousLatestManifest: old, output })
-  const alias = () => readFile(path.join(output, 'dsh-core-update-windows-x64.json'), 'utf8').then(JSON.parse)
-  assert.deepEqual(await alias(), current)
-  await buildCoreIndex({ channel: 'candidate', platform: 'windows-x64',
-    currentManifest: manifest('0.1.6-alpha.1', 'backfill', 'windows-x64', { portableVersion: '0.7.6' }),
-    previousIndex: first.index, previousLatestManifest: current, output })
-  assert.deepEqual(await alias(), current)
-})
+function entry(version, platform, channel = 'candidate', options = {}) {
+  const value = manifest(version, version, platform, { ...options, channel })
+  return { version, manifestUrl: `https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-${channel}/dsh-core-update-${platform}-${version}.json`, manifest: value }
+}
 
-test('the first catalog preserves the previous latest core beside the current version', async (t) => {
+async function makeIndex(options) {
   const output = await mkdtemp(path.join(os.tmpdir(), 'dsh-core-index-'))
-  t.after(() => rm(output, { recursive: true, force: true }))
+  return { ...(await buildCoreIndex({ ...options, output })), output }
+}
 
-  const result = await buildCoreIndex({
-    channel: 'candidate',
-    platform: 'windows-x64',
-    currentManifest: manifest('0.1.2-rc.1'),
-    previousIndex: { schemaVersion: 1, versions: [] },
-    previousLatestManifest: manifest('0.1.2-alpha.5'),
-    output,
-  })
+test('publisher tests this checkout and publishes one five-platform qualification to both legacy tags', async () => {
+  const workflow = await readFile(new URL('../.github/workflows/sync-core-channel.yml', import.meta.url), 'utf8')
+  const queue = await readFile(new URL('../.github/workflows/sync-core.yml', import.meta.url), 'utf8')
+  assert.match(workflow, /repository: WSL043\/DSH-Portable-Updates\s+ref: main\s+path: update-channel/)
+  assert.match(workflow, /node --test update-channel\/tests\/\*\.test\.mjs/)
+  assert.match(workflow, /node update-channel\/scripts\/build-core-index\.mjs/)
+  assert.match(workflow, /for channel in stable candidate/)
+  assert.match(workflow, /\.releaseChannel = "stable"/)
+  assert.match(workflow, /qualification-state\.json/)
+  assert.match(queue, /remaining:[\s\S]*default: 2/)
+  assert.doesNotMatch(workflow + queue, /shell_channel|inputs\.channel|needs\.stable|needs\.candidate/)
+})
 
-  assert.deepEqual(result.index.versions.map(entry => entry.version), ['0.1.2-rc.1', '0.1.2-alpha.5'])
-  assert.deepEqual(result.versionedManifestNames, [
-    'dsh-core-update-windows-x64-0.1.2-rc.1.json',
-    'dsh-core-update-windows-x64-0.1.2-alpha.5.json',
-  ])
-  for (const name of result.versionedManifestNames) {
-    assert.equal(JSON.parse(await readFile(path.join(output, name), 'utf8')).updateKind, 'engine')
+test('stable and candidate old clients accept per-tag index envelopes and one canonical stable manifest envelope', async t => {
+  const topThree = ['0.2.0-rc.2', '0.2.0-rc.1', '0.1.7-rc.2']
+  const previousIndexes = [{ schemaVersion: 1, versions: [
+    entry('0.2.0-rc.1', 'windows-x64', 'candidate', { releaseChannel: 'candidate' }),
+    entry('0.1.7-rc.2', 'windows-x64', 'stable'),
+  ] }]
+  const current = manifest('0.2.0-rc.2', 'current', 'windows-x64', { channel: 'stable' })
+  const stable = await makeIndex({ channel: 'stable', platform: 'windows-x64', currentManifest: current,
+    topThree, qualifiedVersions: topThree, previousIndexes, output: path.join(os.tmpdir(), `unused-${Date.now()}`) })
+  const candidate = await makeIndex({ channel: 'candidate', platform: 'windows-x64', currentManifest: current,
+    topThree, qualifiedVersions: topThree, previousIndexes, output: path.join(os.tmpdir(), `unused-${Date.now()}-candidate`) })
+  t.after(() => Promise.all([rm(stable.output, { recursive: true, force: true }), rm(candidate.output, { recursive: true, force: true })]))
+
+  assert.deepEqual(stable.index.versions.map(item => item.version), topThree)
+  assert.deepEqual(candidate.index.versions.map(item => item.version), topThree)
+  assert.equal(stable.index.releaseChannel, 'stable')
+  assert.equal(candidate.index.releaseChannel, 'candidate')
+  for (const [channel, result] of [['stable', stable], ['candidate', candidate]]) {
+    for (const item of result.index.versions) {
+      assert.match(item.manifestUrl, new RegExp(`/update-channel-core-${channel}/`))
+      assert.equal(item.manifest.releaseChannel, 'stable')
+      assert.ok(item.manifest.component.urls.every(url => url.includes(`/update-channel-core-${channel}/`)))
+    }
+  }
+
+  // Contract fixture mirrors v0.8.2 Desktop Bridge index-channel validation
+  // and update-core.evaluateUpdate: stable rejects candidate manifests while candidate accepts stable.
+  const oldClientAccepts = (installedChannel, index, manifestValue) => index.releaseChannel === installedChannel
+    && (installedChannel !== 'stable' || manifestValue.releaseChannel === 'stable')
+  assert.ok(stable.index.versions.every(item => oldClientAccepts('stable', stable.index, item.manifest)))
+  assert.ok(candidate.index.versions.every(item => oldClientAccepts('candidate', candidate.index, item.manifest)))
+  for (const result of [stable, candidate]) {
+    const alias = JSON.parse(await readFile(path.join(result.output, 'dsh-core-update-windows-x64.json'), 'utf8'))
+    assert.equal(alias.component.dshVersion, topThree[0])
+    assert.equal(alias.releaseChannel, 'stable')
   }
 })
 
-test('the current manifest wins when a prior catalog repeats its DSH version', async (t) => {
-  const output = await mkdtemp(path.join(os.tmpdir(), 'dsh-core-index-'))
+test('only qualified versions within the authoritative top-three window survive catalog generation', async t => {
+  const topThree = ['0.2.0', '0.2.0-rc.2', '0.2.0-rc.1']
+  const previousIndex = { schemaVersion: 1, versions: [
+    entry('0.2.0-rc.2', 'linux-x64'),
+    entry('0.2.0-rc.1', 'linux-x64'),
+    entry('0.1.7-rc.2', 'linux-x64'),
+  ] }
+  const output = await mkdtemp(path.join(os.tmpdir(), 'dsh-core-window-'))
   t.after(() => rm(output, { recursive: true, force: true }))
-  const currentManifest = manifest('0.1.2-rc.1', 'current')
-  const previousManifest = manifest('0.1.2-rc.1', 'previous')
-  const previousIndex = {
-    schemaVersion: 1,
-    versions: [{
-      version: '0.1.2-rc.1',
-      manifestUrl: 'https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-candidate/dsh-core-update-windows-x64-0.1.2-rc.1.json',
-      manifest: previousManifest,
-    }],
-  }
-
-  const result = await buildCoreIndex({
-    channel: 'candidate',
-    platform: 'windows-x64',
-    currentManifest,
-    previousIndex,
-    output,
-  })
-
-  assert.deepEqual(result.index.versions.map(entry => entry.version), ['0.1.2-rc.1'])
-  assert.deepEqual(result.index.versions[0].manifest, currentManifest)
+  const staleManifest = path.join(output, 'dsh-core-update-linux-x64-0.1.7-rc.2.json')
+  await writeFile(staleManifest, '{"stale":true}\n')
+  const result = await buildCoreIndex({ channel: 'stable', platform: 'linux-x64',
+    currentManifest: manifest('0.2.0', 'new', 'linux-x64'),
+    previousIndex, topThree, qualifiedVersions: ['0.2.0', '0.2.0-rc.2'], output })
+  assert.deepEqual(result.index.versions.map(item => item.version), ['0.2.0', '0.2.0-rc.2'])
+  assert.equal(result.versionedManifestNames.length, 2)
+  await assert.rejects(readFile(staleManifest, 'utf8'), error => error.code === 'ENOENT')
+  await assert.rejects(buildCoreIndex({ channel: 'stable', platform: 'linux-x64',
+    currentManifest: manifest('0.1.7-rc.2', 'outside', 'linux-x64'), topThree,
+    qualifiedVersions: topThree, output }), /not qualified inside the official SemVer window/)
 })
 
-test('catalog retains older DSH versions with matching Portable compatibility', async (t) => {
-  const output = await mkdtemp(path.join(os.tmpdir(), 'dsh-core-index-'))
-  t.after(() => rm(output, { recursive: true, force: true }))
-  const currentManifest = manifest('0.1.2-rc.1', 'current', 'linux-x64')
-  const previousManifest = manifest('0.1.2-beta.4', 'previous', 'linux-x64')
-  const previousIndex = {
-    schemaVersion: 1,
-    versions: [{
-      version: '0.1.2-beta.4',
-      manifestUrl: 'https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-candidate/dsh-core-update-linux-x64-0.1.2-beta.4.json',
-      manifest: previousManifest,
-    }],
-  }
-
-  const result = await buildCoreIndex({
-    channel: 'candidate',
-    platform: 'linux-x64',
-    currentManifest,
-    previousIndex,
-    output,
-  })
-
-  assert.deepEqual(result.index.versions.map(entry => entry.version), ['0.1.2-rc.1', '0.1.2-beta.4'])
-  assert.deepEqual(result.index.versions[1].manifest, previousManifest)
-})
-
-test('catalog removes prior DSH versions with incompatible Portable requirements', async (t) => {
-  const output = await mkdtemp(path.join(os.tmpdir(), 'dsh-core-index-'))
-  t.after(() => rm(output, { recursive: true, force: true }))
-  const currentManifest = manifest('0.1.2-rc.1', 'current', 'macos-arm64')
-  const previousManifest = manifest('0.1.2-beta.4', 'incompatible', 'macos-arm64', {
-    requiredShellFingerprint: 'different-shell-fingerprint',
-  })
-  const previousIndex = {
-    schemaVersion: 1,
-    versions: [{
-      version: '0.1.2-beta.4',
-      manifestUrl: 'https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-candidate/dsh-core-update-macos-arm64-0.1.2-beta.4.json',
-      manifest: previousManifest,
-    }],
-  }
-
-  const result = await buildCoreIndex({
-    channel: 'candidate',
-    platform: 'macos-arm64',
-    currentManifest,
-    previousIndex,
-    output,
-  })
-
-  assert.deepEqual(result.index.versions.map(entry => entry.version), ['0.1.2-rc.1'])
-})
-
-test('catalog updates stay newest-first, unique, and bounded to twenty versions', async (t) => {
-  const output = await mkdtemp(path.join(os.tmpdir(), 'dsh-core-index-'))
-  t.after(() => rm(output, { recursive: true, force: true }))
-  const previousVersions = Array.from({length:24}, (_, index) => `0.1.2-beta.${24 - index}`)
-  const previousIndex = {
-    schemaVersion: 1,
-    versions: previousVersions.map(version => ({
-      version,
-      manifestUrl: `https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-candidate/dsh-core-update-linux-x64-${version}.json`,
-      manifest: manifest(version, version, 'linux-x64'),
-    })),
-  }
-
-  const result = await buildCoreIndex({
-    channel: 'candidate',
-    platform: 'linux-x64',
-    currentManifest: manifest('0.1.2-rc.1', '0.1.2-rc.1', 'linux-x64'),
-    previousIndex,
-    previousLatestManifest: manifest('0.1.2-beta.4', '0.1.2-beta.4', 'linux-x64'),
-    output,
-  })
-
-  assert.deepEqual(result.index.versions.map(entry => entry.version), [
-    '0.1.2-rc.1', ...previousVersions.slice(0, 19),
-  ])
-  assert.equal(new Set(result.index.versions.map(entry => entry.version)).size, 20)
-})
-
-test('historical backfill keeps a higher accepted version at the catalog head', async (t) => {
-  const output = await mkdtemp(path.join(os.tmpdir(), 'dsh-core-index-'))
-  t.after(() => rm(output, { recursive: true, force: true }))
-  const currentManifest = manifest('0.1.2-alpha.1', 'current', 'linux-x64')
-  const previousManifest = manifest('0.1.2-rc.1', 'previous', 'linux-x64')
-  const previousIndex = {
-    schemaVersion: 1,
-    versions: [{
-      version: '0.1.2-rc.1',
-      manifestUrl: 'https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-candidate/dsh-core-update-linux-x64-0.1.2-rc.1.json',
-      manifest: previousManifest,
-    }],
-  }
-  const result = await buildCoreIndex({
-    channel:'candidate', platform:'linux-x64', currentManifest, previousIndex,
-    previousLatestManifest:previousManifest, output,
-  })
-  assert.deepEqual(result.index.versions.map(entry => entry.version), ['0.1.2-rc.1', '0.1.2-alpha.1'])
-  assert.equal(result.index.versions[0].manifest, previousManifest)
-})
-
-test('invalid prior catalog entries cannot inject untrusted manifests', async (t) => {
-  const output = await mkdtemp(path.join(os.tmpdir(), 'dsh-core-index-'))
-  t.after(() => rm(output, { recursive: true, force: true }))
-  const previousIndex = {
-    schemaVersion: 1,
-    versions: [{
-      version: '0.1.2-alpha.5',
-      manifestUrl: 'https://evil.invalid/core.json',
-      manifest: manifest('0.1.2-alpha.5'),
-    }],
-  }
-
-  const result = await buildCoreIndex({
-    channel: 'candidate',
-    platform: 'macos-arm64',
-    currentManifest: manifest('0.1.2-rc.1', '0.1.2-rc.1', 'macos-arm64'),
-    previousIndex,
-    previousLatestManifest: null,
-    output,
-  })
-
-  assert.deepEqual(result.index.versions.map(entry => entry.version), ['0.1.2-rc.1'])
-})
-
-test('candidate shell catalog URLs remain separate from stable-shell catalogs', async (t) => {
-  const output = await mkdtemp(path.join(os.tmpdir(), 'dsh-scoped-index-'))
-  t.after(() => rm(output, { recursive: true, force: true }))
-  const previous = process.env.CORE_CHANNEL_TAG
-  process.env.CORE_CHANNEL_TAG = 'update-channel-core-candidate-0.6.5-rc.2'
-  try {
-    const result = await buildCoreIndex({ channel: 'candidate', platform: 'windows-x64',
-      currentManifest: manifest('0.1.5-rc.1', 'current', 'windows-x64', { portableVersion: '0.6.5-rc.2' }), output })
-    assert.match(result.index.versions[0].manifestUrl, /update-channel-core-candidate-0\.6\.5-rc\.2\//)
-  } finally {
-    if (previous === undefined) delete process.env.CORE_CHANNEL_TAG
-    else process.env.CORE_CHANNEL_TAG = previous
-  }
+test('SemVer ordering is prerelease-aware across mixed identifiers and final releases', () => {
+  assert.ok(compareVersions('0.2.0-rc.2', '0.2.0-rc.1') > 0)
+  assert.ok(compareVersions('0.2.0', '0.2.0-rc.999') > 0)
+  assert.ok(compareVersions('0.2.0-beta.1', '0.2.0-rc.1') < 0)
+  assert.ok(compareVersions('1.0.0-alpha.10', '1.0.0-alpha.2') > 0)
 })
