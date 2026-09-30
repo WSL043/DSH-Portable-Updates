@@ -85,6 +85,10 @@ export async function verifyDefaultPluginUi(page, evidence, title = 'Portable de
         await page.waitForFunction(packageName => document.querySelector(`[data-plugin-package="${packageName}"] [role="switch"]`)?.getAttribute('aria-checked') === 'true', packageName)
       }
     }
+    // Below the official responsive breakpoint (the CI window is 1016x680) the sidebar starts collapsed to an icon rail.
+    // Open it through the same button a user would press; the session tree only exists while it is open.
+    const openSidebar = page.getByRole('button', { name: /^(打开侧边栏|Open sidebar|Expand sidebar)$/ })
+    if (await openSidebar.first().isVisible()) await clickAfterOnboarding(page, openSidebar.first())
     const selected = page.getByRole('treeitem').filter({ hasText: title }).last()
     if (!await selected.isVisible()) {
       // The headless fixture belongs to its cwd workspace, which can start collapsed.
