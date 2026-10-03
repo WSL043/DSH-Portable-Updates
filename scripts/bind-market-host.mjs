@@ -11,7 +11,14 @@ export function bindMarketHost(manifest, plan) {
   assert.ok(host?.version, 'official release must include the settings host')
   // This is an exact qualification input, not a claim that future versions work.
   // npm excludes a new prerelease tuple even from an otherwise broad peer range.
-  return { ...manifest, peerDependencies: { ...manifest.peerDependencies, [peer]: host.version } }
+  const peerDependencies = { ...manifest.peerDependencies, [peer]: host.version }
+  // The same applies to the official cordis host: a prerelease such as 4.0.5-alpha.1 falls outside ^4.0.1,
+  // so a release that ships one is qualified against that exact version. Stable cordis keeps the range.
+  const cordis = plan.members.vendor?.find(member => member.name === '@deepseek-ai/cordis')
+  if (cordis?.version?.includes('-') && typeof peerDependencies['@deepseek-ai/cordis'] === 'string') {
+    peerDependencies['@deepseek-ai/cordis'] = cordis.version
+  }
+  return { ...manifest, peerDependencies }
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
@@ -23,7 +30,8 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
   await writeFile(filename, JSON.stringify(next, null, 2) + '\n')
   const evidence = { sourceCommit: plan.sourceCommit, package: next.name,
     peer: '@deepseek-ai/dsh-settings', before: original.peerDependencies['@deepseek-ai/dsh-settings'],
-    qualificationVersion: next.peerDependencies['@deepseek-ai/dsh-settings'] }
+    qualificationVersion: next.peerDependencies['@deepseek-ai/dsh-settings'],
+    cordisBefore: original.peerDependencies['@deepseek-ai/cordis'], cordisQualification: next.peerDependencies['@deepseek-ai/cordis'] }
   await writeFile('market-host-binding.json', JSON.stringify(evidence, null, 2) + '\n')
   console.log(JSON.stringify(evidence))
 }
