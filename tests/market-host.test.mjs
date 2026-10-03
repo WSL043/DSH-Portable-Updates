@@ -15,3 +15,15 @@ test('qualification binds only our market settings peer to the exact official ho
   assert.throws(() => bindMarketHost({ ...original, name: 'third-party-plugin' }, plan))
   assert.throws(() => bindMarketHost(original, { members: { dsh: [] } }))
 })
+
+test('a prerelease official cordis is bound exactly; a stable one keeps the shipped range', () => {
+  const original = { name: '@wsl043/dsh-portable-plugin-market',
+    peerDependencies: { '@deepseek-ai/cordis': '^4.0.1', '@deepseek-ai/dsh-settings': '^0.2.0-rc.2' } }
+  const settings = [{ name: '@deepseek-ai/dsh-settings', version: '0.2.1-alpha.1' }]
+  const alpha = bindMarketHost(original, { members: { dsh: settings, vendor: [{ name: '@deepseek-ai/cordis', version: '4.0.5-alpha.1' }] } })
+  assert.equal(alpha.peerDependencies['@deepseek-ai/cordis'], '4.0.5-alpha.1')
+  assert.equal(alpha.peerDependencies['@deepseek-ai/dsh-settings'], '0.2.1-alpha.1')
+  const stable = bindMarketHost(original, { members: { dsh: settings, vendor: [{ name: '@deepseek-ai/cordis', version: '4.0.4' }] } })
+  assert.equal(stable.peerDependencies['@deepseek-ai/cordis'], '^4.0.1')
+  assert.equal(original.peerDependencies['@deepseek-ai/cordis'], '^4.0.1')
+})
