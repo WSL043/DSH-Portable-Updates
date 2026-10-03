@@ -58,6 +58,7 @@ export function selectCoreRelease(registry, current, acceptedOnly = false, {
   state = [],
   rebuild = false,
   now = Date.now(),
+  awaitingSourceTag = [],
 } = {}) {
   const topThree = latestThreeVersions(registry)
   const allowed = new Set(topThree)
@@ -85,14 +86,17 @@ export function selectCoreRelease(registry, current, acceptedOnly = false, {
     candidates.push(currentCandidate)
   }
   candidates.sort((left, right) => compareVersions(right.version, left.version))
+  const awaiting = new Set(awaitingSourceTag)
   for (const candidate of candidates) {
+    if (awaiting.has(candidate.version)) continue
     const record = records
       .filter(item => item?.sourceSha === sourceSha && item?.version === candidate.version)
       .sort((left, right) => String(right.attemptedAt ?? '').localeCompare(String(left.attemptedAt ?? '')))[0]
     if (record?.status === 'success' || cooling(record, now, pipelineSha, peersHash)) continue
     return { version: candidate.version, integrity: candidate.integrity, topThree, status: 'selected' }
   }
-  return { version: null, integrity: null, topThree, status: 'skip', reason: 'no-unverified-candidate' }
+  return { version: null, integrity: null, topThree, status: 'skip',
+    reason: awaiting.size ? 'awaiting-source-tag' : 'no-unverified-candidate' }
 }
 
 async function writeSelection(filename, value) {
@@ -169,14 +173,29 @@ export async function discoverCoreSource({
   // An accepted-only refresh reuses a published in-window core, never a newer
   // Portable source lock or an unqualified registry version.
   if (accepted?.dsh && (acceptedOnly || compareVersions(accepted.dsh.version, lock.dsh.version) > 0)) lock.dsh = accepted.dsh
-  const selected = selectCoreRelease(registry, lock.dsh, acceptedOnly, {
-    defaultPeersInputHash: peersHash,
-    baselineVersion: productLock.dsh.version,
-    sourceSha,
-    pipelineSha,
-    state,
-    rebuild,
-  })
+  // Upstream can publish to npm before it pushes the release tag. Such a version waits for its immutable
+  // source; the next unqualified version in the window is tried instead, and the next run retries.
+  const awaitingSourceTag = []
+  let selected
+  let tagObject = null
+  for (;;) {
+    selected = selectCoreRelease(registry, lock.dsh, acceptedOnly, {
+      defaultPeersInputHash: peersHash,
+      baselineVersion: productLock.dsh.version,
+      sourceSha,
+      pipelineSha,
+      state,
+      rebuild,
+      awaitingSourceTag,
+    })
+    if (!selected.version || selected.version === lock.dsh.version) break
+    const ref = await get(`https://api.github.com/repos/deepseek-ai/deepseek-harness/git/ref/tags/dsh-v${selected.version}`, true, true)
+    if (ref) {
+      tagObject = ref.object
+      break
+    }
+    awaitingSourceTag.push(selected.version)
+  }
   await writeSelection(selection, {
     schemaVersion: 1,
     sourceSha: sourceSha || null,
@@ -189,10 +208,11 @@ export async function discoverCoreSource({
     publish: Boolean(selected.version),
     status: selected.status,
     reason: selected.reason,
+    awaitingSourceTag,
     attemptedAt,
   })
   if (selected.version && selected.version !== lock.dsh.version) {
-    let object = (await get(`https://api.github.com/repos/deepseek-ai/deepseek-harness/git/ref/tags/dsh-v${selected.version}`)).object
+    let object = tagObject
     if (object?.type === 'tag') object = (await get(`https://api.github.com/repos/deepseek-ai/deepseek-harness/git/tags/${object.sha}`)).object
     if (object?.type !== 'commit' || !/^[0-9a-f]{40}$/.test(object.sha)) throw new Error('Official release tag has no immutable commit')
     const notices = await get(`https://raw.githubusercontent.com/deepseek-ai/deepseek-harness/${object.sha}/THIRD_PARTY_NOTICES.md`, false)

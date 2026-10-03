@@ -110,6 +110,43 @@ test('new official source is locked only after immutable tag, npm integrity, and
   assert.equal(await readFile(path.join(root, 'upstream.lock.json'), 'utf8'), original)
 })
 
+test('a version on npm without its release tag waits while the next window version is qualified', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'core-discovery-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(path.join(root, 'app'), { recursive: true })
+  await writeFile(path.join(root, 'app/package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {} }))
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '0.7.5' }))
+  const original = JSON.stringify({ dsh: current, defaultPlugins: { keep: 'exact' } })
+  await writeFile(path.join(root, 'upstream.lock.json'), original)
+  await writeFile(path.join(root, 'upstream.preview.lock.json'), original)
+  t.mock.method(globalThis, 'fetch', async url => {
+    const request = new URL(url)
+    if (request.hostname === 'registry.npmjs.org') return Response.json(registry)
+    if (request.pathname.endsWith('official-core.lock.json') || request.pathname.endsWith('qualification-state.json')) return new Response('', { status: 404 })
+    if (request.pathname.endsWith('/git/ref/tags/dsh-v0.2.0')) return new Response('', { status: 404 })
+    if (request.pathname.endsWith('/git/ref/tags/dsh-v0.2.0-rc.2')) return Response.json({ object: { type: 'commit', sha: 'b'.repeat(40) } })
+    if (request.pathname.endsWith('/THIRD_PARTY_NOTICES.md')) return new Response('official notices')
+    throw new Error(`Unexpected request ${url}`)
+  })
+  const output = path.join(root, 'resolved/lock.json')
+  const selection = path.join(root, 'selection.json')
+  const result = await discoverCoreSource({ portableRoot: root, output, selection,
+    stateOutput: path.join(root, 'qualification-state.json'), sourceSha: 'published-shell' })
+  const lock = JSON.parse(await readFile(output, 'utf8'))
+  const selected = JSON.parse(await readFile(selection, 'utf8'))
+  assert.equal(result.version, '0.2.0-rc.2')
+  assert.equal(lock.dsh.reviewedCommit, 'b'.repeat(40))
+  assert.deepEqual(selected.awaitingSourceTag, ['0.2.0'])
+  assert.deepEqual(selected.topThree, ['0.2.0', '0.2.0-rc.2', '0.2.0-rc.1'])
+})
+
+test('only tagless versions left in the window skip the run without failing', () => {
+  const selected = selectCoreRelease(registry, current, false, { awaitingSourceTag: ['0.2.0', '0.2.0-rc.2', '0.2.0-rc.1'] })
+  assert.equal(selected.version, null)
+  assert.equal(selected.status, 'skip')
+  assert.equal(selected.reason, 'awaiting-source-tag')
+})
+
 test('accepted-only refresh canonicalizes the stable integrity field and makes no new upstream tag request', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'core-accepted-refresh-'))
   t.after(() => rm(root, { recursive: true, force: true }))
