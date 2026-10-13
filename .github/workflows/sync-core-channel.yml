@@ -407,7 +407,11 @@ jobs:
           & npm install --prefix $DriverRoot --ignore-scripts --no-audit --no-fund playwright@1.63.0
           if ($LASTEXITCODE -ne 0) { throw 'Native plugin UI driver installation failed.' }
           $BaselineRoot = Join-Path $env:RUNNER_TEMP 'core-acceptance/DSH-Portable'
-          & node update-channel/scripts/verify-default-plugin-ui.mjs $BaselineRoot (Join-Path $DriverRoot 'package.json') --disposable
+          # The verifier ships with the Portable shell it verifies, so a shell that changes its first-run flow brings
+          # the matching verifier. Shells published before that fall back to the copy kept in this repository.
+          $Verifier = 'scripts/verify-default-plugin-ui.mjs'
+          if (-not (Test-Path -LiteralPath $Verifier)) { $Verifier = 'update-channel/scripts/verify-default-plugin-ui.mjs' }
+          & node $Verifier $BaselineRoot (Join-Path $DriverRoot 'package.json') --disposable
           if ($LASTEXITCODE -ne 0) { throw 'Default plugin native UI qualification failed; core publication is blocked.' }
       - name: Verify and smoke the core update on the exact base product
         if: matrix.platform == 'macos'
