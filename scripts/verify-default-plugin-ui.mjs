@@ -10,6 +10,10 @@ import { promisify } from 'node:util'
 const exec = promisify(execFile)
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 
+const SIGN_IN_STEP = /登录 DeepSeek 账号，或添加 API Key|add an API Key to get started/i
+const DECISION_BUTTON = /delete|删除|cancel|取消|confirm|确认|save|保存|install|安装|remove|移除|restore|恢复|archive|归档/i
+const ONBOARDING_EXIT = /^(继续|Continue|稍后配置|Configure later|Set up later|Close|关闭|)$/
+
 async function visibleOnboarding(page) {
   const dialog = page.getByRole('dialog').filter({
     hasText: /Internal Testing Notice|内测声明|Preview Notice|预览版说明|Add an API key to get started|添加 API 密钥|添加一个 API Key/i,
@@ -23,6 +27,10 @@ async function visibleOnboarding(page) {
     if (!await candidate.isVisible()) continue
     const buttons = candidate.getByRole('button')
     if (await buttons.count() === 1 && /^(继续|Continue)$/.test((await buttons.first().innerText()).trim())) return candidate
+    // Any first-run dialog without a destructive or confirming choice is onboarding, including steps a newer
+    // official core adds later. Dialogs this script opens itself (delete, restore, viewer) are never matched.
+    const labels = await buttons.allInnerTexts()
+    if (!labels.some(label => DECISION_BUTTON.test(label.trim())) && labels.some(label => ONBOARDING_EXIT.test(label.trim())) || SIGN_IN_STEP.test(await candidate.innerText())) return candidate
   }
   return null
 }
@@ -31,9 +39,9 @@ async function dismissOnboarding(page) {
   for (let step = 0; step < 4; step++) {
     const dialog = await visibleOnboarding(page)
     if (!dialog) return
-    const action = dialog.getByRole('button', {
-      name: /^(继续|Continue|稍后配置|Configure later|Set up later)$/,
-    }).first()
+    // Prefer the dialog's own acknowledge/later button; a step that offers only choices is declined with Close.
+    let action = dialog.getByRole('button', { name: /^(继续|Continue|稍后配置|Configure later|Set up later)$/ }).first()
+    if (!await action.count()) action = dialog.getByRole('button', { name: /^(Close|关闭)$/ }).first()
     const currentDialog = await dialog.elementHandle()
     await action.click()
     // A different onboarding dialog may appear immediately. Wait for the
