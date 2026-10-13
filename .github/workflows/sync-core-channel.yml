@@ -561,6 +561,10 @@ jobs:
               > "publish/$channel/qualification-source-${SELECTED_VERSION}.json"
             cp "publish/$channel/qualification-source-${SELECTED_VERSION}.json" "publish/$channel/channel-source.json"
           done
+      - name: Sign the update metadata so mirrors can serve it safely
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: node update-channel/scripts/sign-update-metadata.mjs publish
       - name: Publish archives first and manifests last
         env:
           GH_TOKEN: ${{ github.token }}
@@ -575,6 +579,7 @@ jobs:
             gh release upload "$TAG" --repo WSL043/DSH-Portable-Updates "publish/$channel"/*.zip --clobber
             gh release upload "$TAG" --repo WSL043/DSH-Portable-Updates \
               "publish/$channel"/dsh-core-update-*.json "publish/$channel"/dsh-core-index-*.json \
+              "publish/$channel"/dsh-core-update-*.json.sig "publish/$channel"/dsh-core-index-*.json.sig \
               "publish/$channel"/channel-source.json "publish/$channel"/official-core.lock.json \
               "publish/$channel"/official-core-*.lock.json "publish/$channel"/qualification-source-*.json --clobber
           done
@@ -598,6 +603,8 @@ jobs:
                   *.zip) grep -Fxq "$name" "$KEEP" || gh api -X DELETE "repos/WSL043/DSH-Portable-Updates/releases/assets/$id" ;;
                   dsh-core-update-windows-x64-[0-9]*.json|dsh-core-update-macos-arm64-[0-9]*.json|dsh-core-update-macos-x64-[0-9]*.json|dsh-core-update-linux-x64-[0-9]*.json|dsh-core-update-linux-arm64-[0-9]*.json)
                     grep -Fxq "$name" "$KEEP" || gh api -X DELETE "repos/WSL043/DSH-Portable-Updates/releases/assets/$id" ;;
+                  dsh-core-update-windows-x64-[0-9]*.json.sig|dsh-core-update-macos-arm64-[0-9]*.json.sig|dsh-core-update-macos-x64-[0-9]*.json.sig|dsh-core-update-linux-x64-[0-9]*.json.sig|dsh-core-update-linux-arm64-[0-9]*.json.sig)
+                    grep -Fxq "${name%.sig}" "$KEEP" || gh api -X DELETE "repos/WSL043/DSH-Portable-Updates/releases/assets/$id" ;;
                 esac
               done
           done
