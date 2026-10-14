@@ -32,11 +32,18 @@ function cooling(record, now, pipelineSha, peersHash) {
     && Date.parse(record.retryAfter) > now
 }
 
+// The newest three versions, except that alphas never push out the newest release candidate or final: when all
+// three are alphas, the third slot goes to the newest non-alpha version if one exists.
 function latestThreeVersions(registry) {
-  return Object.keys(registry?.versions ?? {})
+  const sorted = Object.keys(registry?.versions ?? {})
     .filter(isValidSemVer)
     .sort((left, right) => compareVersions(right, left))
-    .slice(0, 3)
+  const window = sorted.slice(0, 3)
+  if (window.length === 3 && window.every(version => /-alpha[.]/.test(version))) {
+    const stable = sorted.find(version => !/-alpha[.]/.test(version))
+    if (stable) window[2] = stable
+  }
+  return window
 }
 
 function eligibleReleases(registry, topThree, baselineVersion) {
