@@ -17,6 +17,13 @@ test('the full published semver set chooses the newest three across alpha, rc, a
   assert.equal(selected.version, '0.2.0')
 })
 
+test('alphas never push the newest release candidate out of the window', () => {
+  const crowded = ['0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.3']
+  const reg = { versions: Object.fromEntries(crowded.map(version => [version, { dist: { integrity: `sha512-${version}` } }])) }
+  const selected = selectCoreRelease(reg, { version: '0.2.0-rc.2', npmIntegrity: 'sha512-0.2.0-rc.2' }, false, { baselineVersion: '0.2.0-rc.2' })
+  assert.deepEqual(selected.topThree, ['0.2.1-alpha.3', '0.2.1-alpha.2', '0.2.0-rc.2'])
+})
+
 test('failure fallback remains inside the top-three window and never requeues older successful history', () => {
   const failedLatest = [{ sourceSha: 'shell', version: '0.2.0', status: 'failed', pipelineSha: 'pipe', retryAfter: '2099-01-01T00:00:00Z' },
     { sourceSha: 'old-shell', version: '0.1.7-rc.2', status: 'success' }]
