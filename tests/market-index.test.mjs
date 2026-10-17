@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildIndex, buildQuery, displayTitle, githubTarget, readManifest, readResolved, resolveGithub, targetKey } from '../scripts/build-market-index.mjs'
+import { buildIndex, buildQuery, displayTitle, githubTarget, iconFor, readManifest, readResolved, resolveGithub, targetKey } from '../scripts/build-market-index.mjs'
 
 const SHA = 'a'.repeat(40)
 const catalog = (plugins) => ({ updated: '2026-10-16', categories: { tools: { en: 'Tools', zh: '工具' } }, plugins })
@@ -106,4 +106,13 @@ test('a request that returns no data fails, while a missing repository only drop
   assert.deepEqual(index.plugins.map(plugin => plugin.name), ['here'])
   await assert.rejects(resolveGithub({ plugins }, 'token', async () => new Response(JSON.stringify({ data: null, errors: [{ message: 'bad credentials' }] }))), /no data/u)
   await assert.rejects(resolveGithub({ plugins }, 'token', async () => new Response('x', { status: 502 })), /HTTP 502/u)
+})
+
+test('each plugin gets the avatar of the GitHub account that publishes it, because the official page shows only an icon', () => {
+  assert.equal(iconFor({ url: 'https://github.com/someone/x' }), 'https://github.com/someone.png?size=96')
+  assert.equal(iconFor({ url: 'https://github.com/some-one/mono/tree/main/packages/p' }), 'https://github.com/some-one.png?size=96')
+  assert.equal(iconFor({ url: 'https://gitlab.com/someone/x' }), undefined)
+  assert.equal(iconFor({}), undefined)
+  const { index } = buildIndex(catalog([{ ...base, name: 'n', npm: 'n-plugin', version: '1.0.0', url: 'https://github.com/someone/n' }]), {}, 1)
+  assert.equal(index.plugins[0].icon, 'https://github.com/someone.png?size=96')
 })
