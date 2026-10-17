@@ -48,6 +48,15 @@ export function targetKey(target) {
   return `${target.owner}/${target.repo}#${target.ref ?? ''}#${target.path ?? ''}`
 }
 
+/**
+ * The catalog carries no artwork and the official market page shows only a plugin's `icon`, so use the avatar of the
+ * GitHub account that publishes it (GitHub redirects the .png URL to the image).
+ */
+export function iconFor(plugin) {
+  const match = /^https:\/\/github\.com\/([A-Za-z0-9][A-Za-z0-9-]{0,38})(?:\/|$)/u.exec(plugin.url ?? '')
+  return match ? `https://github.com/${match[1]}.png?size=96` : undefined
+}
+
 /** Where GitHub should be asked about an entry, or null for an entry that is not hosted there. */
 export function githubTarget(plugin) {
   if (typeof plugin.tarball === 'string') {
@@ -127,6 +136,7 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
       name,
       title: displayTitle(plugin.name) || name,
       ...(description === undefined ? {} : { description }),
+      ...(iconFor(plugin) === undefined ? {} : { icon: iconFor(plugin) }),
       ...(plugin.owner ? { author: String(plugin.owner) } : {}),
       ...(homepage === undefined ? {} : { homepage }),
       ...(/^https:\/\/github\.com\/[^/?#]+\/[^/?#]+$/u.test(plugin.url ?? '') ? { repository: { url: plugin.url } } : {}),
