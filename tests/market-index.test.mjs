@@ -184,3 +184,17 @@ test('a GitHub batch that comes back empty is retried, and the run only fails wh
   const broken = async () => ({ ok: false, status: 502, json: async () => ({}) })
   await assert.rejects(resolveGithub(catalog([plugin]), 'token', broken, async () => {}), /HTTP 502/)
 })
+
+test('a rate-limited npm lookup is retried and the outcomes are counted', async () => {
+  let calls = 0
+  const fetcher = async () => {
+    calls += 1
+    if (calls <= 2) return { ok: false, status: 429, json: async () => ({}) }
+    return { ok: true, status: 200, json: async () => ({ name: 'p', version: '2.0.0' }) }
+  }
+  const latest = await resolveNpm({ plugins: [{ npm: 'p' }] }, fetcher, 1, async () => {})
+  assert.equal(latest.p.version, '2.0.0')
+  assert.deepEqual(latest.outcomes, { ok: 1 })
+  const never = await resolveNpm({ plugins: [{ npm: 'q' }] }, async () => ({ ok: false, status: 429, json: async () => ({}) }), 1, async () => {})
+  assert.deepEqual(never.outcomes, { 'http 429': 1 })
+})
