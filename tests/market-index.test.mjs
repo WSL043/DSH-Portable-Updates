@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildIndex, buildQuery, displayTitle, githubTarget, iconFor, readManifest, readResolved, resolveGithub, targetKey } from '../scripts/build-market-index.mjs'
+import { buildIndex, buildQuery, displayTitle, githubTarget, manifestIcon, readManifest, readResolved, resolveGithub, targetKey } from '../scripts/build-market-index.mjs'
 
 const SHA = 'a'.repeat(40)
 const catalog = (plugins) => ({ updated: '2026-10-16', categories: { tools: { en: 'Tools', zh: '工具' } }, plugins })
@@ -108,11 +108,31 @@ test('a request that returns no data fails, while a missing repository only drop
   await assert.rejects(resolveGithub({ plugins }, 'token', async () => new Response('x', { status: 502 })), /HTTP 502/u)
 })
 
-test('each plugin gets the avatar of the GitHub account that publishes it, because the official page shows only an icon', () => {
-  assert.equal(iconFor({ url: 'https://github.com/someone/x' }), 'https://github.com/someone.png?size=96')
-  assert.equal(iconFor({ url: 'https://github.com/some-one/mono/tree/main/packages/p' }), 'https://github.com/some-one.png?size=96')
-  assert.equal(iconFor({ url: 'https://gitlab.com/someone/x' }), undefined)
-  assert.equal(iconFor({}), undefined)
-  const { index } = buildIndex(catalog([{ ...base, name: 'n', npm: 'n-plugin', version: '1.0.0', url: 'https://github.com/someone/n' }]), {}, 1)
-  assert.equal(index.plugins[0].icon, 'https://github.com/someone.png?size=96')
+test('a plugin shows the icon its own package.json declares, pinned to the commit it was read at; none declared means none listed', () => {
+  const target = { owner: 'someone', repo: 'mono', path: 'packages/p' }
+  assert.equal(manifestIcon('./assets/icon.svg', target, SHA), `https://cdn.jsdelivr.net/gh/someone/mono@${SHA}/packages/p/assets/icon.svg`)
+  assert.equal(manifestIcon('icon.png', { ...target, path: null }, SHA), `https://cdn.jsdelivr.net/gh/someone/mono@${SHA}/icon.png`)
+  assert.equal(manifestIcon('https://example.com/i.png', target, SHA), 'https://example.com/i.png')
+  assert.equal(manifestIcon('data:image/svg+xml;base64,PHN2Zy8+', target, SHA), 'data:image/svg+xml;base64,PHN2Zy8+')
+  for (const bad of [undefined, '', '../x.svg', './a/../../x.svg', 'http://example.com/i.png', 'data:text/html;base64,AAAA', 'a b.svg']) assert.equal(manifestIcon(bad, target, SHA), undefined, String(bad))
+  assert.equal(manifestIcon('icon.svg', target, 'main'), undefined, 'a branch name is not a pin')
+  const plugins = [
+    { ...base, name: 'with', npm: 'with-icon', version: '1.0.0', url: 'https://github.com/someone/with' },
+    { ...base, name: 'without', npm: 'no-icon', version: '1.0.0', url: 'https://github.com/someone/without' },
+    { ...base, name: 'other', npm: 'wanted', version: '1.0.0', url: 'https://github.com/someone/other' },
+    { ...base, name: 'gitp', npm: null, url: 'https://github.com/someone/gitp' },
+  ]
+  const resolved = {
+    [targetKey(githubTarget(plugins[0]))]: { head: SHA, headManifest: { name: 'with-icon', version: '1.0.0', icon: './icon.svg' } },
+    [targetKey(githubTarget(plugins[1]))]: { head: SHA, headManifest: { name: 'no-icon', version: '1.0.0' } },
+    [targetKey(githubTarget(plugins[2]))]: { head: SHA, headManifest: { name: 'unrelated', version: '1.0.0', icon: 'icon.svg' } },
+    [targetKey(githubTarget(plugins[3]))]: { head: SHA, headManifest: { name: 'gitp', version: '1.0.0', icon: 'icon.png' } },
+  }
+  const { index } = buildIndex(catalog(plugins), resolved, 1)
+  const byName = Object.fromEntries(index.plugins.map(plugin => [plugin.name, plugin.icon]))
+  assert.equal(byName['with-icon'], `https://cdn.jsdelivr.net/gh/someone/with@${SHA}/icon.svg`)
+  assert.equal(byName['no-icon'], undefined)
+  assert.equal(byName.wanted, undefined, 'a different package in the same repository does not lend its icon')
+  assert.equal(byName.gitp, `https://cdn.jsdelivr.net/gh/someone/gitp@${SHA}/icon.png`)
+  assert.equal(readManifest(JSON.stringify({ name: 'a', version: '1.0.0', icon: './i.svg' })).icon, './i.svg')
 })
