@@ -48,13 +48,24 @@ export function targetKey(target) {
   return `${target.owner}/${target.repo}#${target.ref ?? ''}#${target.path ?? ''}`
 }
 
+const DATA_ICON = /^data:image\/(?:svg\+xml|png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/u
+
 /**
- * The catalog carries no artwork and the official market page shows only a plugin's `icon`, so use the avatar of the
- * GitHub account that publishes it (GitHub redirects the .png URL to the image).
+ * The plugin's own icon, from the `icon` its package.json declares. The official market page shows only this field.
+ * A relative path is pinned to the commit the entry was read at and served by jsDelivr, which sends the right image type.
  */
-export function iconFor(plugin) {
-  const match = /^https:\/\/github\.com\/([A-Za-z0-9][A-Za-z0-9-]{0,38})(?:\/|$)/u.exec(plugin.url ?? '')
-  return match ? `https://github.com/${match[1]}.png?size=96` : undefined
+export function manifestIcon(icon, target, commit) {
+  if (typeof icon !== 'string' || icon.trim() === '') return undefined
+  const text = icon.trim()
+  if (text.startsWith('data:')) {
+    const payload = DATA_ICON.exec(text)?.[1]
+    return payload !== undefined && payload.length / 4 * 3 <= 32768 ? text : undefined
+  }
+  if (/^https:\/\//u.test(text)) return text.length <= 2048 ? text : undefined
+  if (!/^[A-Za-z0-9_.@+/-]+$/u.test(text.replace(/^\.\//u, '')) || typeof commit !== 'string' || !/^[0-9a-f]{40}$/u.test(commit)) return undefined
+  const segments = [...(target.path === null ? [] : target.path.split('/')), ...text.replace(/^\.\//u, '').split('/')]
+  if (segments.some(segment => segment === '' || segment === '.' || segment === '..')) return undefined
+  return `https://cdn.jsdelivr.net/gh/${target.owner}/${target.repo}@${commit}/${segments.join('/')}`
 }
 
 /** Where GitHub should be asked about an entry, or null for an entry that is not hosted there. */
@@ -75,7 +86,7 @@ export function readManifest(text) {
     if (typeof manifest.name !== 'string' || !NAME.test(manifest.name) || manifest.name.length > 214) return null
     if (typeof manifest.version !== 'string' || !SEMVER.test(manifest.version)) return null
     const range = manifest.engines?.dsh
-    return { name: manifest.name, version: manifest.version, ...(typeof range === 'string' && range.trim() !== '' ? { engines: range } : {}) }
+    return { name: manifest.name, version: manifest.version, ...(typeof range === 'string' && range.trim() !== '' ? { engines: range } : {}), ...(typeof manifest.icon === 'string' ? { icon: manifest.icon } : {}) }
   } catch {
     return null
   }
@@ -105,10 +116,15 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
     let engines
     let source
     let kind
+    let icon
     if (plugin.npm) {
       if (!NAME.test(plugin.npm) || plugin.npm.length > 214) { skip('npm name not valid for the index'); continue }
       if (typeof plugin.version !== 'string' || !SEMVER.test(plugin.version)) { skip('npm entry without a valid version'); continue }
       name = plugin.npm; version = plugin.version; source = { type: 'npm' }; kind = 'npm'
+      // Only the repository's own package of that name may lend its icon (a monorepo root can hold another package).
+      const target = githubTarget(plugin)
+      const info = target === null ? undefined : resolved[targetKey(target)]
+      if (info?.headManifest?.name === plugin.npm) icon = manifestIcon(info.headManifest.icon, target, info.head)
     } else {
       const target = githubTarget(plugin)
       if (target === null) { skip('not hosted on GitHub and not on npm'); continue }
@@ -119,12 +135,14 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
         if (manifest === undefined || manifest === null) { skip('release tag has no readable package.json'); continue }
         name = manifest.name; version = manifest.version; engines = manifest.engines
         source = { type: 'tarball', url: target.tarball }; kind = 'tarball'
+        icon = manifestIcon(manifest.icon, target, info.tag?.oid)
       } else {
         if (typeof info.head !== 'string' || !/^[0-9a-f]{40}$/u.test(info.head)) { skip('no default branch commit'); continue }
         const manifest = info.headManifest
         if (manifest === undefined || manifest === null) { skip('repository has no readable package.json'); continue }
         name = manifest.name; version = manifest.version; engines = manifest.engines
         source = { type: 'git', url: `https://github.com/${target.owner}/${target.repo}`, commit: info.head, ...(target.path === null ? {} : { path: target.path }) }; kind = 'git'
+        icon = manifestIcon(manifest.icon, target, info.head)
       }
     }
     if (seen.has(name)) { skip('duplicate package name'); continue }
@@ -136,7 +154,7 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
       name,
       title: displayTitle(plugin.name) || name,
       ...(description === undefined ? {} : { description }),
-      ...(iconFor(plugin) === undefined ? {} : { icon: iconFor(plugin) }),
+      ...(icon === undefined ? {} : { icon }),
       ...(plugin.owner ? { author: String(plugin.owner) } : {}),
       ...(homepage === undefined ? {} : { homepage }),
       ...(/^https:\/\/github\.com\/[^/?#]+\/[^/?#]+$/u.test(plugin.url ?? '') ? { repository: { url: plugin.url } } : {}),
@@ -195,7 +213,6 @@ export function readResolved(target, node) {
 export async function resolveGithub(catalog, token, fetcher = fetch) {
   const wanted = new Map()
   for (const plugin of catalog.plugins ?? []) {
-    if (plugin.npm) continue
     const target = githubTarget(plugin)
     if (target === null) continue
     wanted.set(targetKey(target), target)
