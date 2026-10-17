@@ -95,7 +95,7 @@ export function readManifest(text) {
 /**
  * Pure builder. `resolved` maps `owner/repo` to what GitHub said: { head, headManifest, tag: { oid, manifest } } (any may be absent).
  */
-export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() / 1000)) {
+export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() / 1000), npmLatest = {}) {
   const categories = {}
   for (const [id, title] of Object.entries(catalog.categories ?? {})) {
     const text = localized(title)
@@ -120,11 +120,10 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
     if (plugin.npm) {
       if (!NAME.test(plugin.npm) || plugin.npm.length > 214) { skip('npm name not valid for the index'); continue }
       if (typeof plugin.version !== 'string' || !SEMVER.test(plugin.version)) { skip('npm entry without a valid version'); continue }
-      name = plugin.npm; version = plugin.version; source = { type: 'npm' }; kind = 'npm'
-      // Only the repository's own package of that name may lend its icon (a monorepo root can hold another package).
-      const target = githubTarget(plugin)
-      const info = target === null ? undefined : resolved[targetKey(target)]
-      if (info?.headManifest?.name === plugin.npm) icon = manifestIcon(info.headManifest.icon, target, info.head)
+      // The catalog is a snapshot; what npm calls latest is what the market must install.
+      const latest = npmLatest[plugin.npm]
+      name = plugin.npm; version = latest?.version ?? plugin.version; engines = latest?.engines; source = { type: 'npm' }; kind = 'npm'
+      if (latest !== undefined) icon = npmIcon(latest.icon, name, version)
     } else {
       const target = githubTarget(plugin)
       if (target === null) { skip('not hosted on GitHub and not on npm'); continue }
@@ -236,6 +235,40 @@ export async function resolveGithub(catalog, token, fetcher = fetch) {
   return resolved
 }
 
+/** jsDelivr serves a published npm file with the right image type, and the version in the URL never changes. */
+export function npmIcon(icon, name, version) {
+  if (typeof icon !== 'string' || icon.trim() === '') return undefined
+  const text = icon.trim()
+  if (text.startsWith('data:') || /^https:\/\//u.test(text)) return manifestIcon(text, { owner: '', repo: '', path: null }, null)
+  const relative = text.replace(/^\.\//u, '')
+  if (!/^[A-Za-z0-9_.@+/-]+$/u.test(relative)) return undefined
+  const segments = relative.split('/')
+  if (segments.some(segment => segment === '' || segment === '.' || segment === '..')) return undefined
+  return `https://cdn.jsdelivr.net/npm/${name}@${version}/${segments.join('/')}`
+}
+
+/** What npm calls the latest release of each npm-listed plugin: version, DSH range and icon. A failed lookup leaves the catalog's data. */
+export async function resolveNpm(catalog, fetcher = fetch, concurrency = 16) {
+  const names = [...new Set((catalog.plugins ?? []).map(plugin => plugin.npm).filter(name => typeof name === 'string' && NAME.test(name) && name.length <= 214))]
+  const latest = {}
+  let next = 0
+  const worker = async () => {
+    while (next < names.length) {
+      const name = names[next++]
+      try {
+        const response = await fetcher(`https://registry.npmjs.org/${name.replace('/', '%2F')}/latest`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(20_000) })
+        if (!response.ok) continue
+        const manifest = await response.json()
+        if (manifest?.name !== name || typeof manifest.version !== 'string' || !SEMVER.test(manifest.version) || manifest.deprecated) continue
+        const range = manifest.engines?.dsh
+        latest[name] = { version: manifest.version, ...(typeof range === 'string' && range.trim() !== '' ? { engines: range } : {}), ...(typeof manifest.icon === 'string' ? { icon: manifest.icon } : {}) }
+      } catch { /* keep the catalog's version */ }
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, worker))
+  return latest
+}
+
 async function main(argv) {
   const out = argv[0]
   if (!out || out.startsWith('--')) throw new Error('usage: build-market-index.mjs <out.json> [--catalog <plugins.json>] [--report <report.json>]')
@@ -246,7 +279,8 @@ async function main(argv) {
     : JSON.parse(await readFile(catalogPath, 'utf8'))
   const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN
   const resolved = token ? await resolveGithub(catalog, token) : {}
-  const { index, report } = buildIndex(catalog, resolved)
+  const npmLatest = await resolveNpm(catalog)
+  const { index, report } = buildIndex(catalog, resolved, undefined, npmLatest)
   if (index.plugins.length < 1000) throw new Error(`refusing to write an index with only ${String(index.plugins.length)} plugins`)
   await writeFile(out, `${JSON.stringify(index)}\n`, 'utf8')
   const reportPath = option('--report')

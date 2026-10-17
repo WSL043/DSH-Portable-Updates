@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildIndex, buildQuery, displayTitle, githubTarget, manifestIcon, readManifest, readResolved, resolveGithub, targetKey } from '../scripts/build-market-index.mjs'
+import { buildIndex, buildQuery, displayTitle, githubTarget, manifestIcon, npmIcon, resolveNpm, readManifest, readResolved, resolveGithub, targetKey } from '../scripts/build-market-index.mjs'
 
 const SHA = 'a'.repeat(40)
 const catalog = (plugins) => ({ updated: '2026-10-16', categories: { tools: { en: 'Tools', zh: '工具' } }, plugins })
@@ -130,9 +130,36 @@ test('a plugin shows the icon its own package.json declares, pinned to the commi
   }
   const { index } = buildIndex(catalog(plugins), resolved, 1)
   const byName = Object.fromEntries(index.plugins.map(plugin => [plugin.name, plugin.icon]))
-  assert.equal(byName['with-icon'], `https://cdn.jsdelivr.net/gh/someone/with@${SHA}/icon.svg`)
+  assert.equal(byName['with-icon'], undefined, 'an npm plugin takes its icon from the published package, not from the repository head')
   assert.equal(byName['no-icon'], undefined)
   assert.equal(byName.wanted, undefined, 'a different package in the same repository does not lend its icon')
   assert.equal(byName.gitp, `https://cdn.jsdelivr.net/gh/someone/gitp@${SHA}/icon.png`)
   assert.equal(readManifest(JSON.stringify({ name: 'a', version: '1.0.0', icon: './i.svg' })).icon, './i.svg')
+})
+
+test('an npm plugin is listed at the version npm calls latest, with its own icon, not at the catalog snapshot', async () => {
+  const plugin = { ...base, name: 'dsh-codex-subscription', npm: 'dsh-codex-subscription', version: '2.7.1', url: 'https://github.com/someone/sub' }
+  const registry = {
+    'dsh-codex-subscription': { name: 'dsh-codex-subscription', version: '3.0.0', icon: './icon-subscription.webp', engines: { node: '>=24', dsh: '^0.2.0' } },
+    '@s/gone': { name: '@s/gone', version: '1.0.0', deprecated: 'use another' },
+  }
+  const calls = []
+  const fetcher = async url => {
+    calls.push(String(url))
+    const name = decodeURIComponent(String(url).replace('https://registry.npmjs.org/', '').replace(/\/latest$/, ''))
+    return registry[name] ? { ok: true, json: async () => registry[name] } : { ok: false, json: async () => ({}) }
+  }
+  const catalogPlugins = [plugin, { ...base, name: 'gone', npm: '@s/gone', version: '1.0.0', url: 'https://github.com/someone/gone' }, { ...base, name: 'missing', npm: 'not-on-npm', version: '0.1.0', url: 'https://github.com/someone/m' }]
+  const latest = await resolveNpm(catalog(catalogPlugins), fetcher)
+  assert.deepEqual(Object.keys(latest), ['dsh-codex-subscription'], 'a deprecated or unreachable package keeps the catalog data')
+  assert.ok(calls.includes('https://registry.npmjs.org/@s%2Fgone/latest'), 'scoped names are encoded')
+  const { index } = buildIndex(catalog(catalogPlugins), {}, 1, latest)
+  const byName = Object.fromEntries(index.plugins.map(p => [p.name, p]))
+  assert.equal(byName['dsh-codex-subscription'].versions[0].version, '3.0.0')
+  assert.deepEqual(byName['dsh-codex-subscription'].versions[0].engines, { dsh: '^0.2.0' })
+  assert.equal(byName['dsh-codex-subscription'].icon, 'https://cdn.jsdelivr.net/npm/dsh-codex-subscription@3.0.0/icon-subscription.webp')
+  assert.equal(byName['@s/gone'].versions[0].version, '1.0.0')
+  assert.equal(byName['not-on-npm'].versions[0].version, '0.1.0')
+  assert.equal(npmIcon('../x.png', 'a', '1.0.0'), undefined)
+  assert.equal(npmIcon('https://example.com/i.png', 'a', '1.0.0'), 'https://example.com/i.png')
 })
