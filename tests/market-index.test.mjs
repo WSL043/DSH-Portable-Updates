@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildIndex, buildQuery, displayTitle, githubTarget, manifestIcon, resolveYearlyDownloads, pinnedFirst, npmIcon, resolveNpm, readManifest, readResolved, resolveGithub, targetKey } from '../scripts/build-market-index.mjs'
+import { buildIndex, buildQuery, displayTitle, githubTarget, manifestIcon, resolveYearlyDownloads, npmIcon, resolveNpm, readManifest, readResolved, resolveGithub, targetKey } from '../scripts/build-market-index.mjs'
 
 const SHA = 'a'.repeat(40)
 const catalog = (plugins) => ({ updated: '2026-10-16', categories: { tools: { en: 'Tools', zh: '工具' } }, plugins })
@@ -164,12 +164,6 @@ test('an npm plugin is listed at the version npm calls latest, with its own icon
   assert.equal(npmIcon('https://example.com/i.png', 'a', '1.0.0'), 'https://example.com/i.png')
 })
 
-test('the plugin DSH-Portable maintains leads the default order, the rest keep theirs', () => {
-  const list = [{ name: 'x' }, { name: 'dsh-codex-subscription' }, { name: 'y' }]
-  assert.deepEqual(pinnedFirst(list).map(plugin => plugin.name), ['dsh-codex-subscription', 'x', 'y'])
-  assert.deepEqual(pinnedFirst([{ name: 'a' }, { name: 'b' }]).map(plugin => plugin.name), ['a', 'b'])
-})
-
 test('a GitHub batch that comes back empty is retried, and the run only fails when it keeps failing', async () => {
   const plugin = { ...base, name: 'g', npm: null, url: 'https://github.com/someone/g' }
   let calls = 0
@@ -218,4 +212,14 @@ test('the one-year download count is read in bulk for plain names and singly for
   assert.equal(index.plugins.find(p => p.name === 'a').metadata.sortKeys.yearly, 10)
   assert.equal(index.plugins.find(p => p.name === 'z').metadata.sortKeys.yearly, 0)
   assert.equal(index.metadata.sortKeys.yearly.order, 'desc')
+})
+
+test('the default order is by downloads, with no plugin pinned to the front', () => {
+  const list = [
+    { ...base, name: 'quiet', npm: 'quiet', version: '1.0.0', downloads: 5, stars: 99, url: 'https://github.com/o/quiet' },
+    { ...base, name: 'dsh-codex-subscription', npm: 'dsh-codex-subscription', version: '3.0.0', downloads: 50, stars: 1, url: 'https://github.com/o/s' },
+    { ...base, name: 'busy', npm: 'busy', version: '1.0.0', downloads: 500, stars: 1, url: 'https://github.com/o/busy' },
+  ]
+  const { index } = buildIndex(catalog(list), {}, 1)
+  assert.deepEqual(index.plugins.map(plugin => plugin.name), ['busy', 'dsh-codex-subscription', 'quiet'])
 })
