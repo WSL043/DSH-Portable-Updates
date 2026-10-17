@@ -318,12 +318,14 @@ export async function resolveYearlyDownloads(catalog, fetcher = fetch, now = Dat
   const count = key => { outcomes[key] = (outcomes[key] ?? 0) + 1 }
   const run = async ({ batch }) => {
     const path = batch.map(name => name.replace('/', '%2F')).join(',')
-    for (let attempt = 1; attempt <= 4; attempt += 1) {
+    for (let attempt = 1; attempt <= 8; attempt += 1) {
       try {
         const response = await fetcher(`https://api.npmjs.org/downloads/point/${period}/${path}`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(30_000) })
         if (response.status === 429 || response.status >= 500) {
-          if (attempt === 4) { count(`http ${String(response.status)}`); return }
-          await pause(attempt * 5_000)
+          if (attempt === 8) { count(`http ${String(response.status)}`); return }
+          // npm's statistics API throttles bursts; wait longer each time, as long as the server says to.
+          const asked = Number(response.headers?.get?.('retry-after'))
+          await pause(Math.min(60_000, Number.isFinite(asked) && asked > 0 ? asked * 1000 : attempt * 10_000))
           continue
         }
         if (!response.ok) { count(`http ${String(response.status)}`); return }
@@ -336,13 +338,13 @@ export async function resolveYearlyDownloads(catalog, fetcher = fetch, now = Dat
         count('ok')
         return
       } catch {
-        if (attempt === 4) { count('network'); return }
-        await pause(attempt * 5_000)
+        if (attempt === 8) { count('network'); return }
+        await pause(Math.min(60_000, attempt * 10_000))
       }
     }
   }
   let next = 0
-  await Promise.all(Array.from({ length: 4 }, async () => { while (next < jobs.length) await run(jobs[next++]) }))
+  await Promise.all(Array.from({ length: 3 }, async () => { while (next < jobs.length) await run(jobs[next++]) }))
   Object.defineProperty(totals, 'outcomes', { value: outcomes, enumerable: false })
   return totals
 }
