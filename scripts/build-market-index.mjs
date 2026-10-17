@@ -95,14 +95,6 @@ export function readManifest(text) {
 /**
  * Pure builder. `resolved` maps `owner/repo` to what GitHub said: { head, headManifest, tag: { oid, manifest } } (any may be absent).
  */
-/** Plugins DSH-Portable itself maintains come first in the market's default order. */
-export const PINNED = ['dsh-codex-subscription']
-
-export function pinnedFirst(plugins) {
-  const rank = plugin => { const at = PINNED.indexOf(plugin.name); return at === -1 ? PINNED.length : at }
-  return plugins.map((plugin, order) => ({ plugin, order })).sort((left, right) => rank(left.plugin) - rank(right.plugin) || left.order - right.order).map(item => item.plugin)
-}
-
 export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() / 1000), npmLatest = {}, yearly = {}) {
   const categories = {}
   for (const [id, title] of Object.entries(catalog.categories ?? {})) {
@@ -193,7 +185,8 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
           yearly: { title: { en: 'Downloads (1 year)', zh: '年下载量（近 365 天）' }, order: 'desc' },
         },
       },
-      plugins: pinnedFirst(plugins),
+      // The default order is the catalog order of the loop above: most downloaded first, nobody pinned.
+      plugins,
     },
     report: { catalogEntries: (catalog.plugins ?? []).length, included: plugins.length, counts, skips },
   }
