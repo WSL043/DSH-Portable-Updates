@@ -266,25 +266,41 @@ export function npmIcon(icon, name, version) {
   return `https://cdn.jsdelivr.net/npm/${name}@${version}/${segments.join('/')}`
 }
 
-/** What npm calls the latest release of each npm-listed plugin: version, DSH range and icon. A failed lookup leaves the catalog's data. */
-export async function resolveNpm(catalog, fetcher = fetch, concurrency = 16) {
+/**
+ * What npm calls the latest release of each npm-listed plugin: version, DSH range and icon. A lookup that keeps failing
+ * leaves the catalog's data for that plugin; the second value counts how each lookup ended so a rate-limited run is visible.
+ */
+export async function resolveNpm(catalog, fetcher = fetch, concurrency = 8, pause = ms => new Promise(resolve => setTimeout(resolve, ms))) {
   const names = [...new Set((catalog.plugins ?? []).map(plugin => plugin.npm).filter(name => typeof name === 'string' && NAME.test(name) && name.length <= 214))]
   const latest = {}
+  const outcomes = {}
+  const count = key => { outcomes[key] = (outcomes[key] ?? 0) + 1 }
   let next = 0
-  const worker = async () => {
-    while (next < names.length) {
-      const name = names[next++]
+  const lookup = async name => {
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
       try {
         const response = await fetcher(`https://registry.npmjs.org/${name.replace('/', '%2F')}/latest`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(20_000) })
-        if (!response.ok) continue
+        if (response.status === 429 || response.status >= 500) {
+          if (attempt === 4) { count(`http ${String(response.status)}`); return }
+          await pause(attempt * 3_000)
+          continue
+        }
+        if (!response.ok) { count(`http ${String(response.status)}`); return }
         const manifest = await response.json()
-        if (manifest?.name !== name || typeof manifest.version !== 'string' || !SEMVER.test(manifest.version) || manifest.deprecated) continue
+        if (manifest?.name !== name || typeof manifest.version !== 'string' || !SEMVER.test(manifest.version) || manifest.deprecated) { count('unusable'); return }
         const range = manifest.engines?.dsh
         latest[name] = { version: manifest.version, ...(typeof range === 'string' && range.trim() !== '' ? { engines: range } : {}), ...(typeof manifest.icon === 'string' ? { icon: manifest.icon } : {}) }
-      } catch { /* keep the catalog's version */ }
+        count('ok')
+        return
+      } catch {
+        if (attempt === 4) { count('network'); return }
+        await pause(attempt * 3_000)
+      }
     }
   }
+  const worker = async () => { while (next < names.length) await lookup(names[next++]) }
   await Promise.all(Array.from({ length: concurrency }, worker))
+  Object.defineProperty(latest, 'outcomes', { value: outcomes, enumerable: false })
   return latest
 }
 
@@ -304,7 +320,7 @@ async function main(argv) {
   await writeFile(out, `${JSON.stringify(index)}\n`, 'utf8')
   const reportPath = option('--report')
   if (reportPath !== null) await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8')
-  console.log(JSON.stringify(report))
+  console.log(JSON.stringify({ ...report, npmLookups: npmLatest.outcomes }))
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main(process.argv.slice(2))
