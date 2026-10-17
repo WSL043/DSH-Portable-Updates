@@ -217,9 +217,10 @@ export function readResolved(target, node) {
   return target.ref === null ? { head: oid, headManifest: manifest } : { tag: { oid, manifest } }
 }
 
-export async function resolveGithub(catalog, token, fetcher = fetch) {
+export async function resolveGithub(catalog, token, fetcher = fetch, pause = ms => new Promise(resolve => setTimeout(resolve, ms))) {
   const wanted = new Map()
   for (const plugin of catalog.plugins ?? []) {
+    if (plugin.npm) continue
     const target = githubTarget(plugin)
     if (target === null) continue
     wanted.set(targetKey(target), target)
@@ -228,14 +229,24 @@ export async function resolveGithub(catalog, token, fetcher = fetch) {
   const resolved = {}
   for (let offset = 0; offset < targets.length; offset += BATCH) {
     const batch = targets.slice(offset, offset + BATCH)
-    const response = await fetcher('https://api.github.com/graphql', {
-      method: 'POST',
-      headers: { authorization: `bearer ${token}`, 'content-type': 'application/json', 'user-agent': 'dsh-portable-market-index' },
-      body: JSON.stringify({ query: buildQuery(batch) }),
-      signal: AbortSignal.timeout(60_000),
-    })
-    if (!response.ok) throw new Error(`GitHub GraphQL returned HTTP ${String(response.status)}`)
-    const body = await response.json()
+    // A batch that comes back empty or truncated is a transient GitHub failure; try again before giving up on the run.
+    let body
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        const response = await fetcher('https://api.github.com/graphql', {
+          method: 'POST',
+          headers: { authorization: `bearer ${token}`, 'content-type': 'application/json', 'user-agent': 'dsh-portable-market-index' },
+          body: JSON.stringify({ query: buildQuery(batch) }),
+          signal: AbortSignal.timeout(60_000),
+        })
+        if (!response.ok) throw new Error(`GitHub GraphQL returned HTTP ${String(response.status)}`)
+        body = await response.json()
+        break
+      } catch (error) {
+        if (attempt >= 4) throw error
+        await pause(attempt * 5_000)
+      }
+    }
     // Missing repositories come back as per-alias errors with partial data; only a request that returned no data at all is fatal.
     if (body.data === null || body.data === undefined) throw new Error(`GitHub GraphQL returned no data: ${JSON.stringify(body.errors ?? []).slice(0, 300)}`)
     batch.forEach((target, index) => { resolved[targetKey(target)] = readResolved(target, body.data[aliasFor(index)]) })
