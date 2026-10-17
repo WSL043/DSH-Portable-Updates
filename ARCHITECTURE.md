@@ -63,11 +63,26 @@ previously missing feature, retire the corresponding supplemental behavior after
 checking data and settings compatibility. Do not disable an entire default plugin
 merely because one of its features overlaps upstream.
 
-The current manifest intentionally binds core qualification to the exact shell,
-Node and runtime layout. A new Portable release therefore triggers automatic
-requalification of its retained cores. This costs CI time but avoids treating an
-untested shell/core pairing as compatible. A future stable host ABI could reduce
-that work; removing the fingerprint check alone would not establish such an ABI.
+## Shell contract
+
+A core manifest names the shell interface it was built for (`requiredShellContract`,
+an integer). A shell that carries the same number in its installed `COMPONENTS.json`
+accepts the core whatever its Portable version or fingerprint, so users who never
+follow Portable releases still receive cores, and a new Portable release that keeps
+the interface does not empty the catalog. The interface is the set of environment
+variables and `dsh-portable/*` messages the shell and the app exchange; Portable
+freezes it in `config/shell-contract.json` and its tests fail when either side
+changes it without an explicit `update` (compatible) or `bump` (breaking). Node
+version, runtime layout and the update-machinery schema stay separate requirements.
+When a core is installed this way the capsule's component metadata is merged into
+the installed file: runtime facts come from the capsule, the shell's own identity
+(Portable version, fingerprint, contract, WebView2) stays as installed.
+
+A contract bump is deliberate: shells on the old number stop receiving new cores and
+are told to update Portable first, and the catalog starts over for the new number.
+Manifests without a contract (every release before it existed) keep the exact-shell
+binding: the current manifest binds them to the shell, Node and runtime layout, and a
+new Portable release requalifies their retained cores.
 
 ## Reducing future build coupling
 
