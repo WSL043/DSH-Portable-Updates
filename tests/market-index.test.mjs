@@ -169,3 +169,18 @@ test('the plugin DSH-Portable maintains leads the default order, the rest keep t
   assert.deepEqual(pinnedFirst(list).map(plugin => plugin.name), ['dsh-codex-subscription', 'x', 'y'])
   assert.deepEqual(pinnedFirst([{ name: 'a' }, { name: 'b' }]).map(plugin => plugin.name), ['a', 'b'])
 })
+
+test('a GitHub batch that comes back empty is retried, and the run only fails when it keeps failing', async () => {
+  const plugin = { ...base, name: 'g', npm: null, url: 'https://github.com/someone/g' }
+  let calls = 0
+  const flaky = async () => {
+    calls += 1
+    if (calls < 3) return { ok: true, json: async () => { throw new SyntaxError('Unexpected end of JSON input') } }
+    return { ok: true, json: async () => ({ data: { r0: { commit: { oid: SHA }, manifest: { text: JSON.stringify({ name: 'g', version: '1.0.0' }) } } } }) }
+  }
+  const resolved = await resolveGithub(catalog([plugin]), 'token', flaky, async () => {})
+  assert.equal(calls, 3)
+  assert.equal(Object.values(resolved)[0].head, SHA)
+  const broken = async () => ({ ok: false, status: 502, json: async () => ({}) })
+  await assert.rejects(resolveGithub(catalog([plugin]), 'token', broken, async () => {}), /HTTP 502/)
+})
