@@ -30,7 +30,18 @@ if (!newest) throw new Error('npm returned no versions')
 const stateUrl = `https://github.com/${REPO}/releases/download/update-channel-core/qualification-state.json`
 const state = await (await fetch(stateUrl, { redirect: 'follow' })).json()
 await dispatchPluginAutopilots(newest)
-if (state.some((entry) => entry.version === newest)) {
+// A core blocked only because the default plugins did not list it yet is retried once their newest releases do.
+async function pluginsNowSupport(version) {
+  for (const name of ['dsh-image-viewer', 'dsh-chat-manager']) {
+    const manifest = await (await fetch(`https://registry.npmjs.org/${name}/latest`)).json()
+    const peers = Object.entries(manifest.peerDependencies ?? {}).filter(([peer]) => peer.startsWith('@deepseek-ai/dsh-'))
+    if (!peers.every(([, range]) => String(range).split('||').map((item) => item.trim()).includes(version))) return false
+  }
+  return true
+}
+const records = state.filter((entry) => entry.version === newest)
+const waitingOnPlugins = records.length > 0 && records.every((entry) => entry.status === 'blocked' && entry.adapter === 'default-plugin-peers')
+if (records.length > 0 && !(waitingOnPlugins && await pluginsNowSupport(newest))) {
   console.log(`up to date: ${newest} already has a qualification record`)
   process.exit(0)
 }
