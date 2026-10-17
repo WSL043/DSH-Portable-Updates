@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildIndex, buildQuery, displayTitle, githubTarget, manifestIcon, npmIcon, resolveNpm, readManifest, readResolved, resolveGithub, targetKey } from '../scripts/build-market-index.mjs'
+import { buildIndex, buildQuery, displayTitle, githubTarget, manifestIcon, pinnedFirst, npmIcon, resolveNpm, readManifest, readResolved, resolveGithub, targetKey } from '../scripts/build-market-index.mjs'
 
 const SHA = 'a'.repeat(40)
 const catalog = (plugins) => ({ updated: '2026-10-16', categories: { tools: { en: 'Tools', zh: '工具' } }, plugins })
@@ -162,4 +162,10 @@ test('an npm plugin is listed at the version npm calls latest, with its own icon
   assert.equal(byName['not-on-npm'].versions[0].version, '0.1.0')
   assert.equal(npmIcon('../x.png', 'a', '1.0.0'), undefined)
   assert.equal(npmIcon('https://example.com/i.png', 'a', '1.0.0'), 'https://example.com/i.png')
+})
+
+test('the plugin DSH-Portable maintains leads the default order, the rest keep theirs', () => {
+  const list = [{ name: 'x' }, { name: 'dsh-codex-subscription' }, { name: 'y' }]
+  assert.deepEqual(pinnedFirst(list).map(plugin => plugin.name), ['dsh-codex-subscription', 'x', 'y'])
+  assert.deepEqual(pinnedFirst([{ name: 'a' }, { name: 'b' }]).map(plugin => plugin.name), ['a', 'b'])
 })
