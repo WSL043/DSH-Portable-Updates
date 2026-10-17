@@ -47,7 +47,22 @@ function validManifest(manifest, version) {
     })
 }
 
+// A core qualified for the shell interface the current baseline carries (requiredShellContract) stays valid when a
+// later Portable release keeps that interface: its version and fingerprint changed, the contract did not. Without a
+// contract on both sides the core is bound to the exact shell, as before.
+function sharesShellContract(manifest, currentManifest) {
+  const contract = currentManifest?.requiredShellContract
+  return Number.isSafeInteger(contract) && manifest?.requiredShellContract === contract
+}
+
 function compatibleManifest(manifest, currentManifest) {
+  if (sharesShellContract(manifest, currentManifest)) {
+    return manifest?.platform === currentManifest?.platform
+      && manifest?.requiredShellSchema <= currentManifest?.requiredShellSchema
+      && manifest?.targetRuntimeLayout === currentManifest?.targetRuntimeLayout
+      && manifest?.component?.requiredNodeVersion === currentManifest?.component?.requiredNodeVersion
+      && manifest?.component?.runtimeLayout === currentManifest?.component?.runtimeLayout
+  }
   return manifest?.platform === currentManifest?.platform
     && manifest?.portableVersion === currentManifest?.portableVersion
     && manifest?.requiredShellSchema === currentManifest?.requiredShellSchema

@@ -117,6 +117,31 @@ test('only qualified versions within the authoritative top-three window survive 
     qualifiedVersions: topThree, output }), /not qualified inside the official SemVer window/)
 })
 
+test('cores qualified on an earlier Portable stay in the catalog while the shell contract is unchanged', async t => {
+  const topThree = ['0.2.2', '0.2.1', '0.2.0']
+  const withContract = (item, contract, shell) => ({ ...item, manifest: { ...item.manifest, requiredShellContract: contract, ...shell } })
+  const older = { portableVersion: '0.9.2', requiredShellFingerprint: 'old-fingerprint' }
+  const previousIndex = { schemaVersion: 1, versions: [
+    withContract(entry('0.2.1', 'windows-x64', 'stable'), 1, older),
+    withContract(entry('0.2.0', 'windows-x64', 'stable'), 1, older),
+  ] }
+  const current = { ...manifest('0.2.2', 'new', 'windows-x64'), requiredShellContract: 1, portableVersion: '0.9.5', requiredShellFingerprint: 'new-fingerprint' }
+  const kept = await makeIndex({ channel: 'stable', platform: 'windows-x64', currentManifest: current, previousIndex, topThree, qualifiedVersions: topThree })
+  t.after(() => rm(kept.output, { recursive: true, force: true }))
+  assert.deepEqual(kept.index.versions.map(item => item.version), ['0.2.2', '0.2.1', '0.2.0'], 'a new Portable with the same contract does not empty the catalog')
+
+  // A new contract starts over: cores built for the old interface are not offered to shells that speak the new one.
+  const bumped = await makeIndex({ channel: 'stable', platform: 'windows-x64', currentManifest: { ...current, requiredShellContract: 2 }, previousIndex, topThree, qualifiedVersions: topThree })
+  t.after(() => rm(bumped.output, { recursive: true, force: true }))
+  assert.deepEqual(bumped.index.versions.map(item => item.version), ['0.2.2'])
+
+  // Without a contract the exact-shell binding still applies.
+  const legacyPrevious = { schemaVersion: 1, versions: [entry('0.2.1', 'windows-x64', 'stable', older)] }
+  const legacy = await makeIndex({ channel: 'stable', platform: 'windows-x64', currentManifest: manifest('0.2.2', 'new', 'windows-x64', { portableVersion: '0.9.5', requiredShellFingerprint: 'new-fingerprint' }), previousIndex: legacyPrevious, topThree, qualifiedVersions: topThree })
+  t.after(() => rm(legacy.output, { recursive: true, force: true }))
+  assert.deepEqual(legacy.index.versions.map(item => item.version), ['0.2.2'])
+})
+
 test('SemVer ordering is prerelease-aware across mixed identifiers and final releases', () => {
   assert.ok(compareVersions('0.2.0-rc.2', '0.2.0-rc.1') > 0)
   assert.ok(compareVersions('0.2.0', '0.2.0-rc.999') > 0)
