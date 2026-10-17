@@ -103,7 +103,7 @@ export function pinnedFirst(plugins) {
   return plugins.map((plugin, order) => ({ plugin, order })).sort((left, right) => rank(left.plugin) - rank(right.plugin) || left.order - right.order).map(item => item.plugin)
 }
 
-export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() / 1000), npmLatest = {}) {
+export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() / 1000), npmLatest = {}, yearly = {}) {
   const categories = {}
   for (const [id, title] of Object.entries(catalog.categories ?? {})) {
     const text = localized(title)
@@ -168,7 +168,7 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
       metadata: {
         ...(plugin.category && categories[plugin.category] ? { category: plugin.category } : {}),
         keywords: Array.isArray(plugin.capabilities) ? plugin.capabilities.filter(item => typeof item === 'string') : [],
-        sortKeys: { stars: plugin.stars ?? 0, downloads: plugin.downloads ?? 0 },
+        sortKeys: { stars: plugin.stars ?? 0, downloads: plugin.downloads ?? 0, yearly: (plugin.npm && yearly[plugin.npm]) || 0 },
       },
       versions: [{
         version,
@@ -190,6 +190,7 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
         sortKeys: {
           stars: { title: { en: 'Stars', zh: '星标' }, order: 'desc' },
           downloads: { title: { en: 'Downloads (30 days)', zh: '30 天下载量' }, order: 'desc' },
+          yearly: { title: { en: 'Downloads (1 year)', zh: '年下载量（近 365 天）' }, order: 'desc' },
         },
       },
       plugins: pinnedFirst(plugins),
@@ -304,6 +305,55 @@ export async function resolveNpm(catalog, fetcher = fetch, concurrency = 8, paus
   return latest
 }
 
+/**
+ * Downloads over the last 365 days (today and the 364 days before it, UTC) for each npm-listed plugin, from npm's own statistics API:
+ * unscoped names in bulk (the API takes up to 128 per request, this asks for 100) and scoped names one by one. A name whose
+ * count could not be read is simply left out, so it sorts as 0 instead of the whole run failing.
+ */
+export async function resolveYearlyDownloads(catalog, fetcher = fetch, now = Date.now(), pause = ms => new Promise(resolve => setTimeout(resolve, ms))) {
+  const day = 86_400_000
+  const date = value => new Date(value).toISOString().slice(0, 10)
+  const today = Date.parse(`${date(now)}T00:00:00Z`)
+  const period = `${date(today - 364 * day)}:${date(today)}`
+  const names = [...new Set((catalog.plugins ?? []).map(plugin => plugin.npm).filter(name => typeof name === 'string' && NAME.test(name) && name.length <= 214))]
+  const unscoped = names.filter(name => !name.startsWith('@'))
+  const batches = []
+  for (let at = 0; at < unscoped.length; at += 100) batches.push(unscoped.slice(at, at + 100))
+  const jobs = [...batches.map(batch => ({ batch })), ...names.filter(name => name.startsWith('@')).map(name => ({ batch: [name] }))]
+  const totals = {}
+  const outcomes = {}
+  const count = key => { outcomes[key] = (outcomes[key] ?? 0) + 1 }
+  const run = async ({ batch }) => {
+    const path = batch.map(name => name.replace('/', '%2F')).join(',')
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      try {
+        const response = await fetcher(`https://api.npmjs.org/downloads/point/${period}/${path}`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(30_000) })
+        if (response.status === 429 || response.status >= 500) {
+          if (attempt === 4) { count(`http ${String(response.status)}`); return }
+          await pause(attempt * 5_000)
+          continue
+        }
+        if (!response.ok) { count(`http ${String(response.status)}`); return }
+        const body = await response.json()
+        // One package comes back as a flat object, several as a map by name (null for an unknown one).
+        const entries = batch.length === 1 ? [[batch[0], body]] : Object.entries(body ?? {})
+        for (const [name, value] of entries) {
+          if (batch.includes(name) && Number.isSafeInteger(value?.downloads) && value.downloads >= 0) totals[name] = value.downloads
+        }
+        count('ok')
+        return
+      } catch {
+        if (attempt === 4) { count('network'); return }
+        await pause(attempt * 5_000)
+      }
+    }
+  }
+  let next = 0
+  await Promise.all(Array.from({ length: 4 }, async () => { while (next < jobs.length) await run(jobs[next++]) }))
+  Object.defineProperty(totals, 'outcomes', { value: outcomes, enumerable: false })
+  return totals
+}
+
 async function main(argv) {
   const out = argv[0]
   if (!out || out.startsWith('--')) throw new Error('usage: build-market-index.mjs <out.json> [--catalog <plugins.json>] [--report <report.json>]')
@@ -315,12 +365,13 @@ async function main(argv) {
   const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN
   const resolved = token ? await resolveGithub(catalog, token) : {}
   const npmLatest = await resolveNpm(catalog)
-  const { index, report } = buildIndex(catalog, resolved, undefined, npmLatest)
+  const yearly = await resolveYearlyDownloads(catalog)
+  const { index, report } = buildIndex(catalog, resolved, undefined, npmLatest, yearly)
   if (index.plugins.length < 1000) throw new Error(`refusing to write an index with only ${String(index.plugins.length)} plugins`)
   await writeFile(out, `${JSON.stringify(index)}\n`, 'utf8')
   const reportPath = option('--report')
   if (reportPath !== null) await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8')
-  console.log(JSON.stringify({ ...report, npmLookups: npmLatest.outcomes }))
+  console.log(JSON.stringify({ ...report, npmLookups: npmLatest.outcomes, yearlyLookups: yearly.outcomes }))
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main(process.argv.slice(2))

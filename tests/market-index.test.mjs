@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildIndex, buildQuery, displayTitle, githubTarget, manifestIcon, pinnedFirst, npmIcon, resolveNpm, readManifest, readResolved, resolveGithub, targetKey } from '../scripts/build-market-index.mjs'
+import { buildIndex, buildQuery, displayTitle, githubTarget, manifestIcon, resolveYearlyDownloads, pinnedFirst, npmIcon, resolveNpm, readManifest, readResolved, resolveGithub, targetKey } from '../scripts/build-market-index.mjs'
 
 const SHA = 'a'.repeat(40)
 const catalog = (plugins) => ({ updated: '2026-10-16', categories: { tools: { en: 'Tools', zh: '工具' } }, plugins })
@@ -30,7 +30,7 @@ test('npm, release-tarball, git and sub-directory entries become the four source
   assert.deepEqual(byName['mono-plugin'].source, { type: 'git', url: 'https://github.com/someone/mono', commit: SHA, path: 'packages/mono-plugin' })
   assert.equal(byName['git-plugin'].publishTimestamp, Math.floor(Date.parse('2026-09-01') / 1000))
   assert.deepEqual(index.metadata.categories.tools.title, { en: 'Tools', zh: '工具' })
-  assert.deepEqual(index.plugins[0].metadata.sortKeys, { stars: 3, downloads: 10 })
+  assert.deepEqual(index.plugins[0].metadata.sortKeys, { stars: 3, downloads: 10, yearly: 0 })
 })
 
 test('what cannot be represented or resolved is skipped and counted, never guessed', () => {
@@ -197,4 +197,25 @@ test('a rate-limited npm lookup is retried and the outcomes are counted', async 
   assert.deepEqual(latest.outcomes, { ok: 1 })
   const never = await resolveNpm({ plugins: [{ npm: 'q' }] }, async () => ({ ok: false, status: 429, json: async () => ({}) }), 1, async () => {})
   assert.deepEqual(never.outcomes, { 'http 429': 1 })
+})
+
+test('the one-year download count is read in bulk for plain names and singly for scoped ones, and sorts as 0 when unknown', async () => {
+  const seen = []
+  const fetcher = async url => {
+    const path = String(url).split('/point/')[1]
+    seen.push(path)
+    const names = path.split('/')[1]
+    if (names.startsWith('%40') || names.startsWith('@')) return { ok: true, status: 200, json: async () => ({ downloads: 900, package: '@s/p' }) }
+    return { ok: true, status: 200, json: async () => ({ a: { downloads: 10, package: 'a' }, b: null, c: { downloads: 30, package: 'c' } }) }
+  }
+  const plugins = [{ npm: 'a' }, { npm: 'b' }, { npm: 'c' }, { npm: '@s/p' }, { npm: null }]
+  const totals = await resolveYearlyDownloads(catalog(plugins), fetcher, Date.parse('2026-10-17T12:00:00Z'), async () => {})
+  assert.deepEqual({ ...totals }, { a: 10, c: 30, '@s/p': 900 })
+  assert.equal(seen.length, 2, 'one bulk request and one scoped request')
+  assert.ok(seen[0].startsWith('2025-10-18:2026-10-17/'), 'today and the 364 days before it')
+  assert.deepEqual(totals.outcomes, { ok: 2 })
+  const { index } = buildIndex(catalog([{ ...base, name: 'a', npm: 'a', version: '1.0.0', url: 'https://github.com/o/a' }, { ...base, name: 'z', npm: 'z', version: '1.0.0', url: 'https://github.com/o/z' }]), {}, 1, {}, totals)
+  assert.equal(index.plugins.find(p => p.name === 'a').metadata.sortKeys.yearly, 10)
+  assert.equal(index.plugins.find(p => p.name === 'z').metadata.sortKeys.yearly, 0)
+  assert.equal(index.metadata.sortKeys.yearly.order, 'desc')
 })
