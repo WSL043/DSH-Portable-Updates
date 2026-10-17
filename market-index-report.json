@@ -1,0 +1,16 @@
+{
+  "catalogEntries": 5704,
+  "included": 5444,
+  "counts": {
+    "npm": 2606,
+    "tarball": 230,
+    "git": 2608
+  },
+  "skips": {
+    "duplicate package name": 204,
+    "repository has no readable package.json": 16,
+    "no default branch commit": 29,
+    "release tag has no readable package.json": 10,
+    "not hosted on GitHub and not on npm": 1
+  }
+}
