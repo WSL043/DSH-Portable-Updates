@@ -206,3 +206,19 @@ test('one five-platform qualification publishes channel-specific old-client enve
   assert.equal((workflow.match(/artifact: (?:windows|macos|linux)-/g) ?? []).length, 5)
   assert.equal(preview, '')
 })
+
+test('cores the catalog already offers for this shell contract are retained, others still need a run', async () => {
+  const { retainedRecords } = await import('../scripts/discover-core-source.mjs')
+  const index = { versions: [
+    { version: '0.2.1-rc.2', manifest: { requiredShellContract: 1 } },
+    { version: '0.2.1-rc.1', manifest: { requiredShellContract: 1 } },
+    { version: '0.2.1-alpha.5', manifest: { requiredShellContract: 2 } },
+    { version: '0.2.0', manifest: { requiredShellContract: 1 } },
+  ] }
+  const topThree = ['0.2.1-rc.2', '0.2.1-rc.1', '0.2.1-alpha.5', '0.2.1-alpha.4']
+  const state = [{ sourceSha: 'new', version: '0.2.1-rc.2', status: 'success' }]
+  const records = retainedRecords({ topThree, index, contract: 1, sourceSha: 'new', state, attemptedAt: 'now' })
+  assert.deepEqual(records.map(item => item.version), ['0.2.1-rc.1'], 'already qualified on this shell, wrong contract and out-of-window versions are not added')
+  assert.equal(records[0].status, 'success')
+  assert.deepEqual(retainedRecords({ topThree, index, contract: undefined, sourceSha: 'new', state: [], attemptedAt: 'now' }), [])
+})
