@@ -510,7 +510,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$SELECTED_VERSION"
-          [[ "$(jq 'length' <<<"$TOP_THREE")" = 3 ]]
+          [[ "$(jq 'length' <<<"$TOP_THREE")" -ge 1 ]]
           INDEX_QUALIFIED="$(jq -cn --argjson qualified "$QUALIFIED_VERSIONS" --arg version "$SELECTED_VERSION" '$qualified + [$version] | unique')"
           mkdir -p publish previous current
           for channel in stable candidate; do

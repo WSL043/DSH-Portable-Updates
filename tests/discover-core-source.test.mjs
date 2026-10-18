@@ -11,9 +11,9 @@ const registry = { 'dist-tags': { latest: '0.2.0', rc: '0.2.0-rc.2' }, versions:
   [version, { dist: { integrity: `sha512-${version}` } }])) }
 const current = { version: '0.1.7-rc.2', npmIntegrity: 'sha512-0.1.7-rc.2' }
 
-test('the full published semver set chooses the newest three across alpha, rc, and final releases', () => {
+test('the full published semver set chooses the newest five across alpha, rc, and final releases', () => {
   const selected = selectCoreRelease(registry, current, false, { baselineVersion: current.version })
-  assert.deepEqual(selected.topThree, ['0.2.0', '0.2.0-rc.2', '0.2.0-rc.1'])
+  assert.deepEqual(selected.topThree, ['0.2.0', '0.2.0-rc.2', '0.2.0-rc.1', '0.2.0-alpha.1', '0.1.7-rc.2'])
   assert.equal(selected.version, '0.2.0')
 })
 
@@ -21,7 +21,11 @@ test('alphas never push the newest release candidate out of the window', () => {
   const crowded = ['0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.3']
   const reg = { versions: Object.fromEntries(crowded.map(version => [version, { dist: { integrity: `sha512-${version}` } }])) }
   const selected = selectCoreRelease(reg, { version: '0.2.0-rc.2', npmIntegrity: 'sha512-0.2.0-rc.2' }, false, { baselineVersion: '0.2.0-rc.2' })
-  assert.deepEqual(selected.topThree, ['0.2.1-alpha.3', '0.2.1-alpha.2', '0.2.0-rc.2'])
+  assert.deepEqual(selected.topThree, ['0.2.1-alpha.3', '0.2.1-alpha.2', '0.2.1-alpha.1', '0.2.0-rc.2'])
+  const alphaFlood = ['0.2.0-rc.2', '0.2.0-rc.1', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.3', '0.2.1-alpha.4', '0.2.1-alpha.5']
+  const flooded = { versions: Object.fromEntries(alphaFlood.map(version => [version, { dist: { integrity: `sha512-${version}` } }])) }
+  const floodedSelection = selectCoreRelease(flooded, { version: '0.2.0-rc.2', npmIntegrity: 'sha512-0.2.0-rc.2' }, false, { baselineVersion: '0.2.0-rc.2' })
+  assert.deepEqual(floodedSelection.topThree, ['0.2.1-alpha.5', '0.2.1-alpha.4', '0.2.1-alpha.3', '0.2.0-rc.2', '0.2.0-rc.1'], 'two release candidates always stay offered')
 })
 
 test('failure fallback remains inside the top-three window and never requeues older successful history', () => {
@@ -31,7 +35,9 @@ test('failure fallback remains inside the top-three window and never requeues ol
   const twoFailed = [...failedLatest, { sourceSha: 'shell', version: '0.2.0-rc.2', status: 'failed', pipelineSha: 'pipe', retryAfter: '2099-01-01T00:00:00Z' }]
   assert.equal(selectCoreRelease(registry, current, false, { sourceSha: 'shell', pipelineSha: 'pipe', state: twoFailed }).version, '0.2.0-rc.1')
   const allFailed = [...twoFailed, { sourceSha: 'shell', version: '0.2.0-rc.1', status: 'failed', pipelineSha: 'pipe', retryAfter: '2099-01-01T00:00:00Z' }]
-  assert.equal(selectCoreRelease(registry, current, false, { sourceSha: 'shell', pipelineSha: 'pipe', state: allFailed }).version, null)
+  assert.equal(selectCoreRelease(registry, current, false, { sourceSha: 'shell', pipelineSha: 'pipe', state: allFailed }).version, '0.2.0-alpha.1')
+  const fiveFailed = [...allFailed, ...['0.2.0-alpha.1', '0.1.7-rc.2'].map(version => ({ sourceSha: 'shell', version, status: 'failed', pipelineSha: 'pipe', retryAfter: '2099-01-01T00:00:00Z' }))]
+  assert.equal(selectCoreRelease(registry, current, false, { sourceSha: 'shell', pipelineSha: 'pipe', state: fiveFailed }).version, null)
 })
 
 test('after the newest core qualifies, older window versions are backfilled even below the bundled core', () => {
@@ -41,7 +47,9 @@ test('after the newest core qualifies, older window versions are backfilled even
   const twoDone = [...latestDone, { sourceSha: 'shell', version: '0.2.0-rc.2', status: 'success' }]
   assert.equal(selectCoreRelease(registry, bundled, false, { baselineVersion: '0.2.0', sourceSha: 'shell', state: twoDone }).version, '0.2.0-rc.1')
   const allDone = [...twoDone, { sourceSha: 'shell', version: '0.2.0-rc.1', status: 'success' }]
-  assert.equal(selectCoreRelease(registry, bundled, false, { baselineVersion: '0.2.0', sourceSha: 'shell', state: allDone }).version, null)
+  assert.equal(selectCoreRelease(registry, bundled, false, { baselineVersion: '0.2.0', sourceSha: 'shell', state: allDone }).version, '0.2.0-alpha.1')
+  const fiveDone = [...allDone, { sourceSha: 'shell', version: '0.2.0-alpha.1', status: 'success' }, { sourceSha: 'shell', version: '0.1.7-rc.2', status: 'success' }]
+  assert.equal(selectCoreRelease(registry, bundled, false, { baselineVersion: '0.2.0', sourceSha: 'shell', state: fiveDone }).version, null)
 })
 
 test('deprecated or incomplete top-three versions do not widen discovery to version four', () => {
@@ -49,12 +57,14 @@ test('deprecated or incomplete top-three versions do not widen discovery to vers
   limited.versions['0.2.0'].deprecated = 'withdrawn'
   delete limited.versions['0.2.0-rc.2'].dist.integrity
   const selected = selectCoreRelease(limited, current)
-  assert.deepEqual(selected.topThree, ['0.2.0', '0.2.0-rc.2', '0.2.0-rc.1'])
+  assert.deepEqual(selected.topThree, ['0.2.0', '0.2.0-rc.2', '0.2.0-rc.1', '0.2.0-alpha.1', '0.1.7-rc.2'])
   assert.equal(selected.version, '0.2.0-rc.1')
   const outOfWindow = structuredClone(registry)
   outOfWindow.versions['0.2.0'].deprecated = 'withdrawn'
   outOfWindow.versions['0.2.0-rc.2'].deprecated = 'withdrawn'
   outOfWindow.versions['0.2.0-rc.1'].deprecated = 'withdrawn'
+  outOfWindow.versions['0.2.0-alpha.1'].deprecated = 'withdrawn'
+  outOfWindow.versions['0.1.7-rc.2'].deprecated = 'withdrawn'
   assert.equal(selectCoreRelease(outOfWindow, current).version, null)
 })
 
@@ -62,7 +72,7 @@ test('npm integrity and accepted-only refresh remain fail-closed', () => {
   assert.throws(() => selectCoreRelease(registry, { ...current, npmIntegrity: 'changed' }), /integrity changed/)
   assert.throws(() => selectCoreRelease({ versions: {} }, current), /no integrity/)
   assert.equal(selectCoreRelease(registry, { version: '0.2.0-rc.2', npmIntegrity: 'sha512-0.2.0-rc.2' }, true).version, '0.2.0-rc.2')
-  assert.equal(selectCoreRelease(registry, current, true).version, null, 'an accepted core outside top three is rejected')
+  assert.equal(selectCoreRelease({ versions: { ...registry.versions, '0.1.6': { dist: { integrity: 'sha512-0.1.6' } }, '0.1.5': { dist: { integrity: 'sha512-0.1.5' } } } }, { version: '0.1.5', npmIntegrity: 'sha512-0.1.5' }, true).version, null, 'an accepted core outside the window is rejected')
 })
 
 test('default-plugin peer holds and 24-hour failure cooling are preserved', () => {
@@ -107,7 +117,7 @@ test('new official source is locked only after immutable tag, npm integrity, and
   const lock = JSON.parse(await readFile(output, 'utf8'))
   const selected = JSON.parse(await readFile(selection, 'utf8'))
   assert.equal(result.version, '0.2.0')
-  assert.deepEqual(selected.topThree, ['0.2.0', '0.2.0-rc.2', '0.2.0-rc.1'])
+  assert.deepEqual(selected.topThree, ['0.2.0', '0.2.0-rc.2', '0.2.0-rc.1', '0.2.0-alpha.1', '0.1.7-rc.2'])
   assert.equal(lock.dsh.reviewedCommit, 'a'.repeat(40))
   assert.equal(lock.dsh.integrity, 'sha512-0.2.0')
   assert.equal(lock.dsh.npmIntegrity, undefined)
@@ -144,11 +154,11 @@ test('a version on npm without its release tag waits while the next window versi
   assert.equal(result.version, '0.2.0-rc.2')
   assert.equal(lock.dsh.reviewedCommit, 'b'.repeat(40))
   assert.deepEqual(selected.awaitingSourceTag, ['0.2.0'])
-  assert.deepEqual(selected.topThree, ['0.2.0', '0.2.0-rc.2', '0.2.0-rc.1'])
+  assert.deepEqual(selected.topThree, ['0.2.0', '0.2.0-rc.2', '0.2.0-rc.1', '0.2.0-alpha.1', '0.1.7-rc.2'])
 })
 
 test('only tagless versions left in the window skip the run without failing', () => {
-  const selected = selectCoreRelease(registry, current, false, { awaitingSourceTag: ['0.2.0', '0.2.0-rc.2', '0.2.0-rc.1'] })
+  const selected = selectCoreRelease(registry, current, false, { awaitingSourceTag: ['0.2.0', '0.2.0-rc.2', '0.2.0-rc.1', '0.2.0-alpha.1', '0.1.7-rc.2'] })
   assert.equal(selected.version, null)
   assert.equal(selected.status, 'skip')
   assert.equal(selected.reason, 'awaiting-source-tag')

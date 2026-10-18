@@ -1,6 +1,7 @@
 import { readFile, readdir, mkdir, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { CORE_WINDOW_SIZE } from './core-window.mjs'
 
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
 const PLATFORMS = new Set(['windows-x64', 'macos-arm64', 'macos-x64', 'linux-x64', 'linux-arm64'])
@@ -120,8 +121,8 @@ export async function buildCoreIndex({
 }) {
   if (!['stable', 'candidate'].includes(channel)) throw new Error(`Unsupported core channel: ${channel}`)
   if (!PLATFORMS.has(platform)) throw new Error(`Unsupported core platform: ${platform}`)
-  if (!Array.isArray(topThree) || topThree.length !== 3 || new Set(topThree).size !== 3
-    || topThree.some(version => !parseVersion(version))) throw new Error('A three-version official SemVer window is required.')
+  if (!Array.isArray(topThree) || topThree.length < 1 || topThree.length > CORE_WINDOW_SIZE || new Set(topThree).size !== topThree.length
+    || topThree.some(version => !parseVersion(version))) throw new Error('An official SemVer window of up to five versions is required.')
   const allowed = new Set(topThree)
   if (!Array.isArray(qualifiedVersions) || qualifiedVersions.some(version => !allowed.has(version))) {
     throw new Error('Qualified versions must be within the official SemVer window.')
@@ -183,7 +184,7 @@ export async function buildCoreIndex({
   const bounded = unique
     .sort((left, right) => compareVersions(right.version, left.version))
     .filter(entry => allowed.has(entry.version))
-    .slice(0, 3)
+    .slice(0, CORE_WINDOW_SIZE)
   for (const entry of bounded) manifests.set(entry.version, entry.manifest)
   const index = { schemaVersion: 1, channel, releaseChannel: channel, platform, versions: bounded }
   const versionedManifestNames = []

@@ -49,6 +49,10 @@ officially published does not prove that a particular Portable shell and its
 default plugins can host it. Failed candidates leave the working installation
 and accepted catalog intact.
 
+## Core window
+
+用户可选的内核是官方最新的五个版本，其中至少两个是 RC 或正式版：最新五个里不足两个时，最旧的 alpha 让位给更新的 RC/正式版。规则只在 `scripts/core-window.mjs` 里定义，客户端 `launcher/update-core.mjs` 的 `coreWindow()` 必须保持一致。`topThree` 这个字段名是历史遗留，现在装的是整个窗口。
+
 ## Compatibility work should follow interfaces
 
 Testing every released version is automatic qualification, not manual adaptation
