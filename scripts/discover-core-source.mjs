@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { compareVersions, isValidSemVer } from './build-core-index.mjs'
+import { selectCoreWindow } from './core-window.mjs'
 import { mergeQualificationStates } from './update-qualification-state.mjs'
 
 
@@ -32,24 +33,17 @@ function cooling(record, now, pipelineSha, peersHash) {
     && Date.parse(record.retryAfter) > now
 }
 
-// The newest three versions, except that alphas never push out the newest release candidate or final: when all
-// three are alphas, the third slot goes to the newest non-alpha version if one exists.
 function latestThreeVersions(registry) {
   const sorted = Object.keys(registry?.versions ?? {})
     .filter(isValidSemVer)
     .sort((left, right) => compareVersions(right, left))
-  const window = sorted.slice(0, 3)
-  if (window.length === 3 && window.every(version => /-alpha[.]/.test(version))) {
-    const stable = sorted.find(version => !/-alpha[.]/.test(version))
-    if (stable) window[2] = stable
-  }
-  return window
+  return selectCoreWindow(sorted)
 }
 
 function eligibleReleases(registry, topThree, baselineVersion) {
   return topThree
     .map(version => ({ version, metadata: registry?.versions?.[version] }))
-    // Every version in the newest-three window is offered once it qualifies, including ones older than
+    // Every version in the core window is offered once it qualifies, including ones older than
     // the core bundled with this Portable release; users may roll back within the window.
     .filter(({ metadata }) => !metadata?.deprecated
       && typeof metadata?.dist?.integrity === 'string'
@@ -162,7 +156,7 @@ export async function discoverCoreSource({
   }
   const registry = await get('https://registry.npmjs.org/@deepseek-ai%2Fdsh')
   const topThree = latestThreeVersions(registry)
-  if (topThree.length !== 3) throw new Error('Official npm registry does not contain three valid DSH releases.')
+  if (topThree.length === 0) throw new Error('Official npm registry does not contain a valid DSH release.')
   const releaseBase = 'https://github.com/WSL043/DSH-Portable-Updates/releases/download/'
   const [canonicalLock, stableLock, candidateLock, canonicalState, stableState, candidateState] = await Promise.all([
     get(`${releaseBase}update-channel-core/official-core.lock.json`, true, true),
