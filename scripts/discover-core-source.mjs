@@ -14,6 +14,20 @@ function stateRecords(value) {
   return []
 }
 
+/**
+ * Success records for cores the published catalog already offers for this shell contract. A core is qualified for the
+ * shell interface it was built against, not for one Portable commit (docs/shell-contract.md in DSH-Portable), so a
+ * new shell with the same contract keeps them without another five-platform run.
+ */
+export function retainedRecords({ topThree, index, contract, sourceSha, state, attemptedAt }) {
+  if (!Number.isInteger(contract) || !sourceSha || !Array.isArray(index?.versions)) return []
+  const here = new Set(stateRecords(state).filter(item => item?.sourceSha === sourceSha && item?.status === 'success').map(item => item.version))
+  return index.versions
+    .filter(entry => topThree.includes(entry?.version) && !here.has(entry.version)
+      && entry.manifest?.requiredShellContract === contract)
+    .map(entry => ({ sourceSha, version: entry.version, status: 'success', attemptedAt, retainedFromContract: contract }))
+}
+
 export function defaultPeersInputHash(defaultPlugins, checker, dependencyLock) {
   const canonical = value => Array.isArray(value) ? value.map(canonical)
     : value && typeof value === 'object'
@@ -170,6 +184,9 @@ export async function discoverCoreSource({
     .filter(value => value?.dsh?.version && topThree.includes(value.dsh.version))
     .sort((left, right) => compareVersions(right.dsh.version, left.dsh.version))[0]
   const state = mergeQualificationStates(topThree, canonicalState, stableState, candidateState)
+  const contract = JSON.parse(await readFile(path.join(portableRoot, 'config/shell-contract.json'), 'utf8').catch(() => 'null'))?.contract
+  const stableIndex = await get(`${releaseBase}update-channel-core-stable/dsh-core-index-windows-x64.json`, true, true).catch(() => null)
+  state.push(...retainedRecords({ topThree, index: stableIndex, contract, sourceSha, state, attemptedAt }))
   await writeSelection(stateOutput, state)
   // An accepted-only refresh reuses a published in-window core, never a newer
   // Portable source lock or an unqualified registry version.
