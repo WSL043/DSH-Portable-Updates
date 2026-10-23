@@ -22,6 +22,8 @@ The exact upstream checkout supplies its publishable package membership through 
 
 If a newer upstream release requires additional adaptation, manually dispatch with `accepted_only=true` to select the already accepted in-window core against the latest verified shell. Registry integrity and same-contract retention rules still apply; any required build runs the complete platform build and acceptance matrix before publication. Scheduled runs continue discovering and backfilling the supported five-version window while the existing interfaces remain compatible. An interface break still requires a Portable product change, and this option does not mark a failed new version as accepted.
 
+For a maintenance refresh of an older delivered core, explicitly set `rebuild=true` and `rebuild_version` to its exact version. The target must be in the supported window and signed stable catalog, share the published shell's contract and have a successful qualification record. Its registry integrity and official tag commit must still match the published versioned lock and catalog. This selects that core for the existing full build and five-platform acceptance pipeline; it does not change scheduled discovery or bypass plugin/security gates. Refresh versions one at a time and wait for each result; rebuild runs do not drain the queue.
+
 ## Published Native shell boundary
 
 The current workflow selects the latest **published stable Native** Portable release and its matching successful main build as one shell baseline. Both legacy channel catalogs receive that qualification result. It does not run a separate Portable RC qualification lane, and an unpublished main commit is never selected as a shell baseline.

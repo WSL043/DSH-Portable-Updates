@@ -129,7 +129,10 @@ export async function discoverCoreSource({
   token = process.env.GITHUB_TOKEN,
   acceptedOnly = false,
   rebuild = false,
+  rebuildVersion = '',
 }) {
+  if (rebuildVersion && !rebuild) throw new Error('A targeted refresh requires rebuild=true.')
+  if (rebuildVersion && !isValidSemVer(rebuildVersion)) throw new Error('Invalid targeted rebuild version.')
   const lockFile = 'upstream.lock.json'
   const lock = JSON.parse(await readFile(path.join(portableRoot, lockFile), 'utf8'))
   const product = JSON.parse(await readFile(path.join(portableRoot, 'package.json'), 'utf8'))
@@ -168,9 +171,15 @@ export async function discoverCoreSource({
     if (!response.ok) throw new Error(`Official source request failed: ${response.status} ${url}`)
     return json ? response.json() : response.text()
   }
+  async function officialCommit(object) {
+    if (object?.type === 'tag') object = (await get(`https://api.github.com/repos/deepseek-ai/deepseek-harness/git/tags/${object.sha}`)).object
+    if (object?.type !== 'commit' || !/^[0-9a-f]{40}$/.test(object.sha)) throw new Error('Official release tag has no immutable commit')
+    return object.sha
+  }
   const registry = await get('https://registry.npmjs.org/@deepseek-ai%2Fdsh')
   const topThree = latestThreeVersions(registry)
   if (topThree.length === 0) throw new Error('Official npm registry does not contain a valid DSH release.')
+  if (rebuildVersion && !topThree.includes(rebuildVersion)) throw new Error('Targeted rebuild is outside the supported window.')
   const releaseBase = 'https://github.com/WSL043/DSH-Portable-Updates/releases/download/'
   const [canonicalLock, stableLock, candidateLock, canonicalState, stableState, candidateState] = await Promise.all([
     get(`${releaseBase}update-channel-core/official-core.lock.json`, true, true),
@@ -185,18 +194,52 @@ export async function discoverCoreSource({
     .sort((left, right) => compareVersions(right.dsh.version, left.dsh.version))[0]
   const state = mergeQualificationStates(topThree, canonicalState, stableState, candidateState)
   const contract = JSON.parse(await readFile(path.join(portableRoot, 'config/shell-contract.json'), 'utf8').catch(() => 'null'))?.contract
-  const stableIndex = await get(`${releaseBase}update-channel-core-stable/dsh-core-index-windows-x64.json`, true, true).catch(() => null)
+  let stableIndex = await get(`${releaseBase}update-channel-core-stable/dsh-core-index-windows-x64.json`, true, true).catch(() => null)
+  let targeted = null
+  if (rebuildVersion) {
+    // Maintenance refreshes may replace only an already delivered core. Authenticate the exact catalog bytes
+    // with the selected published shell's trust keys; never turn this input into arbitrary npm/source selection.
+    const catalogUrl = `${releaseBase}update-channel-core-stable/dsh-core-index-windows-x64.json`
+    const [catalogBytes, signature] = await Promise.all([get(catalogUrl, false), get(`${catalogUrl}.sig`, false)])
+    const { verifyUpdateSignature } = await import(pathToFileURL(path.join(portableRoot, 'launcher/update-signature.mjs')))
+    let verified = false
+    try { verified = verifyUpdateSignature(Buffer.from(catalogBytes, 'utf8'), signature) } catch {}
+    if (!verified) throw new Error('Published catalog signature is invalid.')
+    const catalog = JSON.parse(catalogBytes)
+    stableIndex = catalog
+    const entry = catalog?.schemaVersion === 1 && catalog.channel === 'stable' && catalog.platform === 'windows-x64'
+      ? catalog.versions?.find(item => item.version === rebuildVersion) : null
+    if (!entry || entry.manifest?.component?.dshVersion !== rebuildVersion) throw new Error('Target is not in the published catalog.')
+    if (!Number.isInteger(contract) || entry.manifest.requiredShellContract !== contract) throw new Error('Target shell contract differs from the published baseline.')
+    const record = state.filter(item => item.version === rebuildVersion)
+      .sort((a, b) => String(b.attemptedAt ?? '').localeCompare(String(a.attemptedAt ?? '')))[0]
+    if (record?.status !== 'success') throw new Error('Target has no current successful qualification.')
+    const published = (await get(`${releaseBase}update-channel-core-stable/official-core-${rebuildVersion}.lock.json`))?.dsh
+    const metadata = registry.versions[rebuildVersion]
+    const integrity = metadata?.dist?.integrity
+    if (metadata?.deprecated || typeof integrity !== 'string' || !/^sha512-[A-Za-z0-9+/]{86}==$/.test(integrity)
+      || integrity !== (published?.integrity || published?.npmIntegrity)
+      || (published?.integrity && published?.npmIntegrity && published.integrity !== published.npmIntegrity)) throw new Error('Target registry integrity differs from the published lock.')
+    if (published?.version !== rebuildVersion || published.package !== '@deepseek-ai/dsh'
+      || published.tag !== `dsh-v${rebuildVersion}`
+      || published.sourceRepository !== 'https://github.com/deepseek-ai/deepseek-harness') throw new Error('Published target source lock is invalid.')
+    const commit = await officialCommit((await get(`https://api.github.com/repos/deepseek-ai/deepseek-harness/git/ref/tags/dsh-v${rebuildVersion}`)).object)
+    if (commit !== published.reviewedCommit || commit !== entry.manifest.component.dshCommit) throw new Error('Target official tag commit differs from the published lock/catalog commit.')
+    lock.dsh = { ...published }
+    targeted = { version: rebuildVersion, integrity, topThree, status: 'selected', reason: 'qualified-rebuild' }
+  }
   state.push(...retainedRecords({ topThree, index: stableIndex, contract, sourceSha, state, attemptedAt }))
   await writeSelection(stateOutput, state)
   // An accepted-only refresh reuses a published in-window core, never a newer
   // Portable source lock or an unqualified registry version.
-  if (accepted?.dsh && (acceptedOnly || compareVersions(accepted.dsh.version, lock.dsh.version) > 0)) lock.dsh = accepted.dsh
+  if (!targeted && accepted?.dsh && (acceptedOnly || compareVersions(accepted.dsh.version, lock.dsh.version) > 0)) lock.dsh = accepted.dsh
   // Upstream can publish to npm before it pushes the release tag. Such a version waits for its immutable
   // source; the next unqualified version in the window is tried instead, and the next run retries.
   const awaitingSourceTag = []
   let selected
   let tagObject = null
-  for (;;) {
+  if (targeted) selected = targeted
+  else for (;;) {
     selected = selectCoreRelease(registry, lock.dsh, acceptedOnly, {
       defaultPeersInputHash: peersHash,
       baselineVersion: productLock.dsh.version,
@@ -230,11 +273,9 @@ export async function discoverCoreSource({
     attemptedAt,
   })
   if (selected.version && selected.version !== lock.dsh.version) {
-    let object = tagObject
-    if (object?.type === 'tag') object = (await get(`https://api.github.com/repos/deepseek-ai/deepseek-harness/git/tags/${object.sha}`)).object
-    if (object?.type !== 'commit' || !/^[0-9a-f]{40}$/.test(object.sha)) throw new Error('Official release tag has no immutable commit')
-    const notices = await get(`https://raw.githubusercontent.com/deepseek-ai/deepseek-harness/${object.sha}/THIRD_PARTY_NOTICES.md`, false)
-    Object.assign(lock.dsh, { version: selected.version, tag: `dsh-v${selected.version}`, reviewedCommit: object.sha,
+    const commit = await officialCommit(tagObject)
+    const notices = await get(`https://raw.githubusercontent.com/deepseek-ai/deepseek-harness/${commit}/THIRD_PARTY_NOTICES.md`, false)
+    Object.assign(lock.dsh, { version: selected.version, tag: `dsh-v${selected.version}`, reviewedCommit: commit,
       noticesSha256: createHash('sha256').update(notices).digest('hex') })
     // The checked-out official release planner supplies these before any build.
     delete lock.dsh.packageManager
@@ -259,5 +300,6 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
     stateOutput,
     acceptedOnly: process.env.ACCEPTED_CORE_ONLY === 'true',
     rebuild: process.env.REBUILD_CORE === 'true',
+    rebuildVersion: process.env.REBUILD_VERSION || '',
   })))
 }
