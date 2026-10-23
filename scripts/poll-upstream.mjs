@@ -11,7 +11,7 @@ const run = (cmd, args) => (cmd === 'npm' ? execSync(['npm', ...args].join(' '),
 // only every 6 hours. Once upstream has an official GitHub Release for the newest version and a plugin's
 // compatibility.json does not list it yet, start that plugin's autopilot right away.
 async function dispatchPluginAutopilots(version) {
-  const upstream = await fetch(`https://api.github.com/repos/deepseek-ai/deepseek-harness/releases/tags/v${version}`)
+  const upstream = await fetch(`https://api.github.com/repos/deepseek-ai/deepseek-harness/releases/tags/dsh-v${version}`)
   if (!upstream.ok) return
   for (const repo of ['WSL043/dsh-image-viewer', 'WSL043/dsh-chat-manager']) {
     const file = JSON.parse(run('gh', ['api', `repos/${repo}/contents/compatibility.json`, '-H', 'Accept: application/vnd.github.raw']))
