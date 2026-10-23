@@ -17,6 +17,11 @@ on:
         required: false
         type: boolean
         default: false
+      rebuild_version:
+        description: Optional exact already-qualified core to refresh (requires rebuild=true)
+        required: false
+        type: string
+        default: ''
 
 permissions:
   actions: read
@@ -109,6 +114,7 @@ jobs:
           PIPELINE_SHA: ${{ github.sha }}
           ACCEPTED_CORE_ONLY: ${{ inputs.accepted_only || false }}
           REBUILD_CORE: ${{ inputs.rebuild || false }}
+          REBUILD_VERSION: ${{ inputs.rebuild_version || '' }}
         run: |
           set -euo pipefail
           node --test update-channel/tests/*.test.mjs

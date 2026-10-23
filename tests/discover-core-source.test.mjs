@@ -6,11 +6,78 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { runInNewContext } from 'node:vm'
+import { createHash, generateKeyPairSync, sign } from 'node:crypto'
 
 const versions = ['0.1.7-rc.2', '0.2.0-alpha.1', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.0']
 const registry = { 'dist-tags': { latest: '0.2.0', rc: '0.2.0-rc.2' }, versions: Object.fromEntries(versions.map(version =>
   [version, { dist: { integrity: `sha512-${version}` } }])) }
 const current = { version: '0.1.7-rc.2', npmIntegrity: 'sha512-0.1.7-rc.2' }
+
+test('targeted refresh only rebuilds an already qualified signed-catalog version', async t => {
+  const qualified = ['0.2.1-rc.2', '0.2.1-rc.1', '0.2.1-alpha.5']
+  const cases = [
+    ...qualified.map(version => ({ name: `allows ${version}`, version })),
+    { name: 'requires explicit rebuild', rebuild: false, error: /requires.*rebuild/ },
+    { name: 'rejects tagless rc3', version: '0.2.1-rc.3', error: /published catalog/ },
+    { name: 'rejects blocked target', version: '0.2.1-alpha.4', blocked: true, error: /successful qualification/ },
+    { name: 'rejects arbitrary target', version: '9.9.9', error: /window/ },
+    { name: 'rejects changed SRI', badIntegrity: true, error: /integrity/ },
+    { name: 'rejects changed official tag', badTag: true, error: /commit/ },
+    { name: 'rejects a missing official tag', missingTag: true, error: /Official source request failed: 404/ },
+    { name: 'rejects changed published commit', badCommit: true, error: /commit/ },
+    { name: 'rejects invalid catalog signature', badSignature: true, error: /signature/ },
+    { name: 'rejects another shell contract', badContract: true, error: /contract/ },
+  ]
+  for (const scenario of cases) await t.test(scenario.name, async st => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'core-targeted-refresh-'))
+    st.after(() => rm(root, { recursive: true, force: true }))
+    for (const directory of ['app', 'config', 'launcher']) await mkdir(path.join(root, directory))
+    const version = scenario.version || qualified[1]
+    const sri = v => `sha512-${createHash('sha512').update(v).digest('base64')}`
+    const commits = Object.fromEntries([...qualified, '0.2.1-alpha.4', '0.2.1-rc.3'].map((v, i) => [v, String(i + 1).repeat(40)]))
+    const dsh = v => ({ package: '@deepseek-ai/dsh', version: v, tag: `dsh-v${v}`, sourceRepository: 'https://github.com/deepseek-ai/deepseek-harness',
+      reviewedCommit: commits[v], npmIntegrity: sri(v), noticesSha256: 'a'.repeat(64) })
+    const original = JSON.stringify({ dsh: dsh(qualified[0]), defaultPlugins: { keep: 'published-shell' } })
+    await writeFile(path.join(root, 'upstream.lock.json'), original)
+    await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '0.9.5' }))
+    await writeFile(path.join(root, 'app/package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {} }))
+    await writeFile(path.join(root, 'config/shell-contract.json'), JSON.stringify({ contract: 2 }))
+    const registry = { versions: Object.fromEntries(['0.2.1-rc.3', ...qualified, '0.2.1-alpha.4'].map(v => [v, { dist: { integrity: sri(v) } }])) }
+    const catalogVersions = scenario.blocked ? [...qualified, version] : qualified
+    const catalog = JSON.stringify({ schemaVersion: 1, channel: 'stable', platform: 'windows-x64', versions: catalogVersions.map(v => ({ version: v,
+      manifest: { requiredShellContract: scenario.badContract && v === version ? 3 : 2, component: { dshVersion: v, dshCommit: commits[v] } } })) })
+    const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
+    const pem = publicKey.export({ type: 'spki', format: 'pem' })
+    await writeFile(path.join(root, 'launcher/update-signature.mjs'), `import { verify } from 'node:crypto'; export const verifyUpdateSignature = (bytes, signature) => verify('sha256', bytes, { key: ${JSON.stringify(pem)}, dsaEncoding: 'ieee-p1363' }, Buffer.from(signature.trim(), 'base64'));`)
+    const signature = scenario.badSignature ? 'invalid' : sign('sha256', Buffer.from(catalog), { key: privateKey, dsaEncoding: 'ieee-p1363' }).toString('base64')
+    const state = catalogVersions.map(v => ({ version: v, sourceSha: 'a'.repeat(40), status: scenario.blocked && v === version ? 'blocked' : 'success', attemptedAt: '2026-10-21T00:00:00Z' }))
+    st.mock.method(globalThis, 'fetch', async url => {
+      const request = new URL(url), name = request.pathname.split('/').at(-1)
+      if (request.hostname === 'registry.npmjs.org') return Response.json(registry)
+      if (name === 'dsh-core-index-windows-x64.json') return new Response(catalog)
+      if (name === 'dsh-core-index-windows-x64.json.sig') return new Response(signature)
+      if (name === 'qualification-state.json') return Response.json(state)
+      if (name === 'official-core.lock.json') return Response.json(JSON.parse(original))
+      if (name === `official-core-${version}.lock.json`) return Response.json({ dsh: { ...dsh(version),
+        ...(scenario.badIntegrity ? { npmIntegrity: 'sha512-changed' } : {}), ...(scenario.badCommit ? { reviewedCommit: 'f'.repeat(40) } : {}) } })
+      if (request.pathname.endsWith(`/git/ref/tags/dsh-v${version}`)) return scenario.missingTag ? new Response('', { status: 404 }) : Response.json({ object: { type: 'commit', sha: scenario.badTag ? 'e'.repeat(40) : commits[version] } })
+      if (name === 'THIRD_PARTY_NOTICES.md') return new Response('official notices')
+      throw new Error(`Unexpected request ${url}`)
+    })
+    const output = path.join(root, 'resolved/lock.json')
+    const call = () => discoverCoreSource({ portableRoot: root, output, selection: path.join(root, 'selection.json'), stateOutput: path.join(root, 'state.json'),
+      sourceSha: 'b'.repeat(40), rebuild: scenario.rebuild !== false, rebuildVersion: version })
+    if (scenario.error) await assert.rejects(call, scenario.error)
+    else {
+      assert.equal((await call()).version, version)
+      const locked = JSON.parse(await readFile(output, 'utf8'))
+      assert.equal(locked.dsh.reviewedCommit, commits[version])
+      assert.equal(locked.dsh.integrity, sri(version))
+      assert.deepEqual(locked.defaultPlugins, { keep: 'published-shell' })
+      assert.equal(await readFile(path.join(root, 'upstream.lock.json'), 'utf8'), original)
+    }
+  })
+})
 
 test('the local plugin poll requests the official dsh-v release tag before dispatching', async () => {
   const source = await readFile(new URL('../scripts/poll-upstream.mjs', import.meta.url), 'utf8')
@@ -211,6 +278,9 @@ test('one five-platform qualification publishes channel-specific old-client enve
   const workflow = await readFile(new URL('../.github/workflows/sync-core-channel.yml', import.meta.url), 'utf8')
   const preview = await readFile(new URL('../.github/workflows/sync-preview-shell.yml', import.meta.url), 'utf8').catch(() => '')
   assert.match(queue, /remaining:\s+description: Additional bounded fallback runs after this one \(0 to 2\)[\s\S]*default: 2/)
+  assert.match(queue, /rebuild_version:[\s\S]*type: string[\s\S]*default: ''/)
+  assert.match(queue, /rebuild_version: \$\{\{ inputs\.rebuild_version \|\| '' \}\}/)
+  assert.match(workflow, /REBUILD_VERSION: \$\{\{ inputs\.rebuild_version \|\| '' \}\}/)
   assert.doesNotMatch(queue, /needs\.stable|needs\.candidate/)
   assert.doesNotMatch(workflow, /shell_channel|inputs\.channel|SHELL_CHANNEL/)
   assert.match(workflow, /select-native-release\.mjs published-releases\.json/)

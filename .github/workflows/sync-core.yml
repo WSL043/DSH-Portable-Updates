@@ -20,6 +20,11 @@ on:
         required: false
         type: boolean
         default: false
+      rebuild_version:
+        description: Optional exact already-qualified core to refresh (requires rebuild=true)
+        required: false
+        type: string
+        default: ''
 
 permissions:
   actions: read
@@ -35,6 +40,7 @@ jobs:
     with:
       accepted_only: ${{ inputs.accepted_only || false }}
       rebuild: ${{ inputs.rebuild || false }}
+      rebuild_version: ${{ inputs.rebuild_version || '' }}
     secrets: inherit
 
   drain-queue:
