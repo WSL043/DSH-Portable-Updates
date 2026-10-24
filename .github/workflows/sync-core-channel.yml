@@ -62,6 +62,7 @@ jobs:
       selection_reason: ${{ steps.selection.outputs.reason }}
       state_tag: ${{ steps.source.outputs.state_tag }}
       source_sha: ${{ steps.source.outputs.source_sha }}
+      release_tag: ${{ steps.source.outputs.release_tag }}
       plugin_status: ${{ steps.plugin-preflight.outputs.status }}
       run_id: ${{ steps.source.outputs.run_id }}
       lock_file: ${{ steps.source.outputs.lock_file }}
@@ -311,7 +312,9 @@ jobs:
         with:
           path: update-channel
       - uses: actions/download-artifact@v8
+        id: baseline-pnpm
         if: steps.preview.outputs.pnpmSourceCommit != ''
+        continue-on-error: true
         with:
           name: preview-packed-runtime
           repository: WSL043/DSH-Portable
@@ -319,8 +322,20 @@ jobs:
           github-token: ${{ github.token }}
           path: baseline-packed
       - name: Reuse the reviewed package manager from the same successful Portable build
-        if: steps.preview.outputs.pnpmSourceCommit != ''
+        if: steps.preview.outputs.pnpmSourceCommit != '' && steps.baseline-pnpm.outcome == 'success'
         run: cp -R baseline-packed/pnpm upstream/dist/pnpm
+      - uses: actions/checkout@v7
+        if: steps.preview.outputs.pnpmSourceCommit != '' && steps.baseline-pnpm.outcome == 'failure'
+        with:
+          repository: pnpm/pnpm
+          ref: ${{ steps.preview.outputs.pnpmSourceCommit }}
+          path: pnpm-source
+          persist-credentials: false
+      - name: Rebuild reviewed package manager when the old CI artifact has expired
+        if: steps.preview.outputs.pnpmSourceCommit != '' && steps.baseline-pnpm.outcome == 'failure'
+        run: |
+          npm install --prefix "$RUNNER_TEMP/pnpm-build" --ignore-scripts --no-audit --no-fund "pnpm@$(node -p "require('./upstream.lock.json').pnpm.version")"
+          node scripts/build-reviewed-pnpm.mjs --source pnpm-source --pnpm "$RUNNER_TEMP/pnpm-build/node_modules/pnpm/bin/pnpm.cjs" --output upstream/dist/pnpm
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -407,6 +422,7 @@ jobs:
         with:
           node-version: 24.22.1
       - uses: actions/download-artifact@v8
+        if: needs.resolve.outputs.release_tag == ''
         with:
           name: ${{ matrix.artifact }}-build
           repository: WSL043/DSH-Portable
@@ -420,6 +436,18 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: update-channel
+      - name: Download the immutable published Native baseline
+        if: needs.resolve.outputs.release_tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          BASELINE_PLATFORM: ${{ matrix.artifact }}
+        run: |
+          set -euo pipefail
+          ARCHIVE="$(node update-channel/scripts/released-baseline.mjs archive "$BASELINE_PLATFORM")"
+          gh release download "$RELEASE_TAG" --repo WSL043/DSH-Portable --pattern "$ARCHIVE" --pattern checksums.txt --dir baseline-artifacts
+          node update-channel/scripts/released-baseline.mjs verify baseline-artifacts "$BASELINE_PLATFORM"
       - name: Bind our market to the exact host being qualified
         run: node update-channel/scripts/bind-market-host.mjs . resolved-core/members.json
       - name: Align runtime verification with the published permission adapter
