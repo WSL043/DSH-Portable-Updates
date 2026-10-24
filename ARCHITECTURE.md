@@ -23,7 +23,8 @@ behavior. Publishing an official core must not create a Portable release.
 
 1. Use the published stable Portable release and its successful product build as
    the shell baseline. A successful but unpublished main commit is not a client
-   compatibility baseline.
+   compatibility baseline. The separate manual prepare-only entry may build against
+   an exact successful main SHA before release; it cannot publish or write qualification state.
 2. Discover official registry versions, not only moving dist-tags. Keep registry
    integrity and immutable upstream source provenance for each selected version.
    Derive publishable members from the official release planner in that exact
