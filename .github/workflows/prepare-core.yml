@@ -1,0 +1,26 @@
+name: Prepare verified core without publication
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact Portable main SHA with a successful full Build run
+        required: true
+        type: string
+      prepare_version:
+        description: Exact official DSH version inside the supported five-version window
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  core:
+    uses: ./.github/workflows/sync-core-channel.yml
+    with:
+      prepare_only: true
+      source_sha: ${{ inputs.source_sha }}
+      prepare_version: ${{ inputs.prepare_version }}
+    secrets: inherit

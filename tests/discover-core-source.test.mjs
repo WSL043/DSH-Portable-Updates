@@ -17,6 +17,10 @@ test('targeted refresh only rebuilds an already qualified signed-catalog version
   const qualified = ['0.2.1-rc.2', '0.2.1-rc.1', '0.2.1-alpha.5']
   const cases = [
     ...qualified.map(version => ({ name: `allows ${version}`, version })),
+    { name: 'prepares new rc3 without published qualification', version: '0.2.1-rc.3', prepareOnly: true },
+    { name: 'preparation ignores a prior hold', version: '0.2.1-alpha.4', prepareOnly: true, blocked: true },
+    { name: 'preparation rejects outside window', version: '9.9.9', prepareOnly: true, error: /window/ },
+    { name: 'preparation rejects missing immutable tag', version: '0.2.1-rc.3', prepareOnly: true, missingTag: true, error: /Official source request failed: 404/ },
     { name: 'requires explicit rebuild', rebuild: false, error: /requires.*rebuild/ },
     { name: 'rejects tagless rc3', version: '0.2.1-rc.3', error: /published catalog/ },
     { name: 'rejects blocked target', version: '0.2.1-alpha.4', blocked: true, error: /successful qualification/ },
@@ -37,7 +41,8 @@ test('targeted refresh only rebuilds an already qualified signed-catalog version
     const commits = Object.fromEntries([...qualified, '0.2.1-alpha.4', '0.2.1-rc.3'].map((v, i) => [v, String(i + 1).repeat(40)]))
     const dsh = v => ({ package: '@deepseek-ai/dsh', version: v, tag: `dsh-v${v}`, sourceRepository: 'https://github.com/deepseek-ai/deepseek-harness',
       reviewedCommit: commits[v], npmIntegrity: sri(v), noticesSha256: 'a'.repeat(64) })
-    const original = JSON.stringify({ dsh: dsh(qualified[0]), defaultPlugins: { keep: 'published-shell' } })
+    const buildDependencies = { zod: { version: '4.6.7', integrity: sri('reviewed-zod') } }
+    const original = JSON.stringify({ dsh: { ...dsh(qualified[0]), buildDependencies }, defaultPlugins: { keep: 'published-shell' } })
     await writeFile(path.join(root, 'upstream.lock.json'), original)
     await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '0.9.5' }))
     await writeFile(path.join(root, 'app/package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {} }))
@@ -58,7 +63,7 @@ test('targeted refresh only rebuilds an already qualified signed-catalog version
       if (name === 'dsh-core-index-windows-x64.json.sig') return new Response(signature)
       if (name === 'qualification-state.json') return Response.json(state)
       if (name === 'official-core.lock.json') return Response.json(JSON.parse(original))
-      if (name === `official-core-${version}.lock.json`) return Response.json({ dsh: { ...dsh(version),
+      if (name === `official-core-${version}.lock.json`) return Response.json({ dsh: { ...dsh(version), buildDependencies: { zod: { version: '4.4.3' } },
         ...(scenario.badIntegrity ? { npmIntegrity: 'sha512-changed' } : {}), ...(scenario.badCommit ? { reviewedCommit: 'f'.repeat(40) } : {}) } })
       if (request.pathname.endsWith(`/git/ref/tags/dsh-v${version}`)) return scenario.missingTag ? new Response('', { status: 404 }) : Response.json({ object: { type: 'commit', sha: scenario.badTag ? 'e'.repeat(40) : commits[version] } })
       if (name === 'THIRD_PARTY_NOTICES.md') return new Response('official notices')
@@ -66,7 +71,8 @@ test('targeted refresh only rebuilds an already qualified signed-catalog version
     })
     const output = path.join(root, 'resolved/lock.json')
     const call = () => discoverCoreSource({ portableRoot: root, output, selection: path.join(root, 'selection.json'), stateOutput: path.join(root, 'state.json'),
-      sourceSha: 'b'.repeat(40), rebuild: scenario.rebuild !== false, rebuildVersion: version })
+      sourceSha: 'b'.repeat(40), rebuild: scenario.prepareOnly ? false : scenario.rebuild !== false,
+      rebuildVersion: scenario.prepareOnly ? '' : version, prepareOnly: scenario.prepareOnly || false, prepareVersion: scenario.prepareOnly ? version : '' })
     if (scenario.error) await assert.rejects(call, scenario.error)
     else {
       assert.equal((await call()).version, version)
@@ -74,6 +80,8 @@ test('targeted refresh only rebuilds an already qualified signed-catalog version
       assert.equal(locked.dsh.reviewedCommit, commits[version])
       assert.equal(locked.dsh.integrity, sri(version))
       assert.deepEqual(locked.defaultPlugins, { keep: 'published-shell' })
+      assert.deepEqual(locked.dsh.buildDependencies, buildDependencies, 'Use the selected Portable dependency policy, not an older accepted core policy')
+      if (scenario.prepareOnly) assert.equal(JSON.parse(await readFile(path.join(root, 'selection.json'), 'utf8')).reason, 'prepare-only')
       assert.equal(await readFile(path.join(root, 'upstream.lock.json'), 'utf8'), original)
     }
   })
@@ -294,15 +302,17 @@ test('one five-platform qualification publishes channel-specific old-client enve
 test('cores the catalog already offers for this shell contract are retained, others still need a run', async () => {
   const { retainedRecords } = await import('../scripts/discover-core-source.mjs')
   const index = { versions: [
-    { version: '0.2.1-rc.2', manifest: { requiredShellContract: 1 } },
-    { version: '0.2.1-rc.1', manifest: { requiredShellContract: 1 } },
-    { version: '0.2.1-alpha.5', manifest: { requiredShellContract: 2 } },
-    { version: '0.2.0', manifest: { requiredShellContract: 1 } },
+    { version: '0.2.1-rc.2', manifest: { requiredShellContract: 1, component: { requiredNodeVersion: '24.22.1' } } },
+    { version: '0.2.1-rc.1', manifest: { requiredShellContract: 1, component: { requiredNodeVersion: '24.22.1' } } },
+    { version: '0.2.1-alpha.5', manifest: { requiredShellContract: 2, component: { requiredNodeVersion: '24.22.1' } } },
+    { version: '0.2.1-alpha.4', manifest: { requiredShellContract: 1, component: { requiredNodeVersion: '24.19.0' } } },
+    { version: '0.2.0', manifest: { requiredShellContract: 1, component: { requiredNodeVersion: '24.22.1' } } },
   ] }
   const topThree = ['0.2.1-rc.2', '0.2.1-rc.1', '0.2.1-alpha.5', '0.2.1-alpha.4']
   const state = [{ sourceSha: 'new', version: '0.2.1-rc.2', status: 'success' }]
-  const records = retainedRecords({ topThree, index, contract: 1, sourceSha: 'new', state, attemptedAt: 'now' })
+  const records = retainedRecords({ topThree, index, contract: 1, nodeVersion: '24.22.1', sourceSha: 'new', state, attemptedAt: 'now' })
   assert.deepEqual(records.map(item => item.version), ['0.2.1-rc.1'], 'already qualified on this shell, wrong contract and out-of-window versions are not added')
   assert.equal(records[0].status, 'success')
+  assert.deepEqual(retainedRecords({ topThree, index, contract: 1, sourceSha: 'new', state: [], attemptedAt: 'now' }), [], 'Unknown Node baseline cannot inherit success')
   assert.deepEqual(retainedRecords({ topThree, index, contract: undefined, sourceSha: 'new', state: [], attemptedAt: 'now' }), [])
 })
