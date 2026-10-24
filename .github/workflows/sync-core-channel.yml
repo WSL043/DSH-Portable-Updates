@@ -22,6 +22,11 @@ on:
         required: false
         type: string
         default: ''
+      prepared_run_id:
+        description: Promote artifacts from an exact successful prepare-core main run
+        required: false
+        type: string
+        default: ''
       accepted_only:
         description: Requalify the already accepted core without upstream version discovery
         required: false
@@ -132,6 +137,27 @@ jobs:
           repository: WSL043/DSH-Portable
           ref: ${{ steps.source.outputs.source_sha }}
           path: portable-source
+      - name: Require the published product dependency gate before publication
+        if: ${{ !inputs.prepare_only }}
+        run: |
+          node -e "const fs=require('fs'); const gate=JSON.parse(fs.readFileSync('portable-source/stable-release-readiness.json','utf8')).dependencySecurity; if(gate?.status!=='passed'||typeof gate.evidence!=='string'||!gate.evidence.trim()) throw Error('The published Native baseline has no passed dependency-security gate')"
+      - name: Verify the successful preparation belongs to this exact published baseline
+        id: prepared
+        if: inputs.prepared_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREPARED_RUN_ID: ${{ inputs.prepared_run_id }}
+          PREPARE_ONLY: ${{ inputs.prepare_only }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          PIPELINE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$PREPARE_ONLY" != true
+          [[ "$PREPARED_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/WSL043/DSH-Portable-Updates/actions/runs/$PREPARED_RUN_ID" > prepared-run.json
+          gh run download "$PREPARED_RUN_ID" --repo WSL043/DSH-Portable-Updates --name resolved-selection --dir prepared-selection
+          gh run download "$PREPARED_RUN_ID" --repo WSL043/DSH-Portable-Updates --name resolved-core --dir prepared-core
+          node update-channel/scripts/prepared-core.mjs run prepared-run.json prepared-selection/selection.json "$SOURCE_SHA" "$PIPELINE_SHA" "$PREPARED_RUN_ID" >> "$GITHUB_OUTPUT"
       - name: Discover and lock the newest official core release
         id: discovery
         env:
@@ -141,8 +167,8 @@ jobs:
           ACCEPTED_CORE_ONLY: ${{ inputs.accepted_only || false }}
           REBUILD_CORE: ${{ inputs.rebuild || false }}
           REBUILD_VERSION: ${{ inputs.rebuild_version || '' }}
-          PREPARE_ONLY: ${{ inputs.prepare_only }}
-          PREPARE_VERSION: ${{ inputs.prepare_version }}
+          PREPARE_ONLY: ${{ inputs.prepare_only || inputs.prepared_run_id != '' }}
+          PREPARE_VERSION: ${{ steps.prepared.outputs.version || inputs.prepare_version }}
         run: |
           set -euo pipefail
           node --test update-channel/tests/*.test.mjs
@@ -184,6 +210,12 @@ jobs:
           )"
 
           echo "fingerprint=$FINGERPRINT" >> "$GITHUB_OUTPUT"
+      - name: Bind prepared artifacts to the freshly resolved official lock
+        if: inputs.prepared_run_id != '' && steps.plan.outcome == 'success'
+        run: |
+          node update-channel/scripts/prepared-core.mjs lock prepared-core/lock.json resolved-core/lock.json
+          jq '.reason = "prepared-artifact-promotion"' selection.json > promoted-selection.json
+          mv promoted-selection.json selection.json
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -217,7 +249,7 @@ jobs:
 
   preview-runtime:
     needs: resolve
-    if: needs.resolve.result == 'success' && needs.resolve.outputs.publish == 'true'
+    if: needs.resolve.result == 'success' && needs.resolve.outputs.publish == 'true' && inputs.prepared_run_id == ''
     runs-on: ubuntu-latest
     outputs:
       adapter_status: ${{ steps.adapter-preflight.outputs.status || steps.descriptor-v2.outputs.status }}
@@ -331,7 +363,7 @@ jobs:
 
   build:
     needs: [resolve, preview-runtime]
-    if: needs.resolve.result == 'success' && needs.preview-runtime.result == 'success' && needs.resolve.outputs.publish == 'true'
+    if: needs.resolve.result == 'success' && needs.preview-runtime.result == 'success' && needs.resolve.outputs.publish == 'true' && inputs.prepared_run_id == ''
     strategy:
       fail-fast: false
       matrix:
@@ -528,12 +560,52 @@ jobs:
           if-no-files-found: warn
           compression-level: 0
 
+  reuse-prepared:
+    needs: resolve
+    if: needs.resolve.result == 'success' && needs.resolve.outputs.publish == 'true' && inputs.prepared_run_id != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: WSL043/DSH-Portable
+          ref: ${{ needs.resolve.outputs.source_sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.22.1
+      - uses: actions/download-artifact@v8
+        with:
+          name: resolved-core
+          path: resolved-core
+      - name: Apply the verified source lock
+        run: cp resolved-core/lock.json upstream.lock.json
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: core-stable-*
+          repository: WSL043/DSH-Portable-Updates
+          run-id: ${{ inputs.prepared_run_id }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: artifacts
+      - name: Verify every prepared platform archive again before publication
+        run: |
+          for platform in windows-x64 macos-arm64 macos-x64 linux-x64 linux-arm64; do
+            node scripts/verify-update-artifact.mjs "artifacts/dsh-core-update-$platform.json" "artifacts/DSH-Portable-update-$platform.zip" engine
+          done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: core-stable-prepared
+          path: |
+            artifacts/DSH-Portable-update-*.zip
+            artifacts/dsh-core-update-*.json
+          if-no-files-found: error
+          compression-level: 0
+
   publish:
     permissions:
       actions: read
       contents: write
-    needs: [resolve, build]
-    if: ${{ !inputs.prepare_only && needs.resolve.result == 'success' && needs.resolve.outputs.publish == 'true' && needs.build.result == 'success' }}
+    needs: [resolve, build, reuse-prepared]
+    if: ${{ always() && !cancelled() && !inputs.prepare_only && needs.resolve.result == 'success' && needs.resolve.outputs.publish == 'true' && (needs.build.result == 'success' || needs.reuse-prepared.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -552,7 +624,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: WSL043/DSH-Portable-Updates
-          ref: main
+          ref: ${{ github.sha }}
           path: update-channel
       - uses: actions/setup-node@v7
         with:
@@ -674,7 +746,7 @@ jobs:
           done
 
   channel-result:
-    needs: [resolve, preview-runtime, build, publish]
+    needs: [resolve, preview-runtime, build, reuse-prepared, publish]
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -694,9 +766,9 @@ jobs:
           RESOLVE_RESULT: ${{ needs.resolve.result }}
           PREFLIGHT_RESULT: ${{ needs.preview-runtime.outputs.adapter_status || needs.resolve.outputs.plugin_status }}
           HOLD_REASON: ${{ needs.preview-runtime.outputs.adapter_reason || needs.resolve.outputs.selection_reason }}
-          BUILD_RESULT: ${{ needs.build.result }}
+          BUILD_RESULT: ${{ needs.reuse-prepared.result == 'success' && 'success' || needs.build.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
-          PREVIEW_RESULT: ${{ needs.preview-runtime.result }}
+          PREVIEW_RESULT: ${{ needs.reuse-prepared.result == 'success' && 'success' || needs.preview-runtime.result }}
           PREPARE_ONLY: ${{ inputs.prepare_only }}
         run: node scripts/report-core-result.mjs
 
@@ -706,7 +778,7 @@ jobs:
       contents: write
     env:
       STATE_TAG: ${{ needs.resolve.outputs.state_tag }}
-    needs: [resolve, preview-runtime, build, publish]
+    needs: [resolve, preview-runtime, build, reuse-prepared, publish]
     if: ${{ always() && !inputs.prepare_only && needs.resolve.outputs.version != '' }}
     runs-on: ubuntu-latest
     steps:
@@ -729,9 +801,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RESOLVE_RESULT: ${{ needs.resolve.result }}
-          PREVIEW_RESULT: ${{ needs.preview-runtime.result }}
+          PREVIEW_RESULT: ${{ needs.reuse-prepared.result == 'success' && 'success' || needs.preview-runtime.result }}
           ADAPTER_STATUS: ${{ needs.preview-runtime.outputs.adapter_status }}
-          BUILD_RESULT: ${{ needs.build.result }}
+          BUILD_RESULT: ${{ needs.reuse-prepared.result == 'success' && 'success' || needs.build.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
           PUBLISH_REQUIRED: ${{ needs.resolve.outputs.publish }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}

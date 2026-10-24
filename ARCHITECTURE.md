@@ -37,6 +37,9 @@ behavior. Publishing an official core must not create a Portable release.
    already qualified versions do not need rebuilding for a pipeline-only change.
 4. Run the existing five-platform installation, startup, plugin preservation and
    rollback gates. Publish only successful component archives and catalogs.
+   A prepare-only run may retain those artifacts before the Native release;
+   promotion reuses them only when the published source, reviewed pipeline and
+   freshly resolved source/dependency lock still match exactly.
    During staging, bind our bundled market's settings peer to the exact official
    host under test. npm otherwise excludes newly numbered prereleases from the
    old enumerated peer range. This changes only our package metadata, preserves
