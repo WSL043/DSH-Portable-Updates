@@ -23,7 +23,8 @@ behavior. Publishing an official core must not create a Portable release.
 
 1. Use the published stable Portable release and its successful product build as
    the shell baseline. A successful but unpublished main commit is not a client
-   compatibility baseline.
+   compatibility baseline. The separate manual prepare-only entry may build against
+   an exact successful main SHA before release; it cannot publish or write qualification state.
 2. Discover official registry versions, not only moving dist-tags. Keep registry
    integrity and immutable upstream source provenance for each selected version.
    Derive publishable members from the official release planner in that exact
@@ -36,6 +37,9 @@ behavior. Publishing an official core must not create a Portable release.
    already qualified versions do not need rebuilding for a pipeline-only change.
 4. Run the existing five-platform installation, startup, plugin preservation and
    rollback gates. Publish only successful component archives and catalogs.
+   A prepare-only run may retain those artifacts before the Native release;
+   promotion reuses them only when the published source, reviewed pipeline and
+   freshly resolved source/dependency lock still match exactly.
    During staging, bind our bundled market's settings peer to the exact official
    host under test. npm otherwise excludes newly numbered prereleases from the
    old enumerated peer range. This changes only our package metadata, preserves

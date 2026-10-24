@@ -19,3 +19,12 @@ test('summaries distinguish blocked, absent work and discovery failure', () => {
   assert.match(coreResult({...base,publish:'skipped',selected:'false'}),/无需重新验证/)
   assert.match(coreResult({...base,publish:'skipped',selected:'false',resolve:'failure'}),/来源核验失败/)
 })
+
+test('preparation reports success only after source, runtime, and every platform pass', () => {
+  const prepared = { ...base, prepareOnly: true, preview: 'success', publish: 'skipped' }
+  assert.match(coreResult(prepared), /已准备，未发布/)
+  assert.doesNotMatch(coreResult(prepared), /Published channel/)
+  for (const changes of [{ build: 'failure' }, { preview: 'failure' }, { publish: 'success' }]) {
+    assert.match(coreResult({ ...prepared, ...changes }), /准备失败/)
+  }
+})

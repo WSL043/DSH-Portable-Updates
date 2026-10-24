@@ -1,0 +1,20 @@
+name: Publish a prepared verified core
+
+on:
+  workflow_dispatch:
+    inputs:
+      prepared_run_id:
+        description: Successful prepare-core main run for the exact published Native baseline
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  core:
+    uses: ./.github/workflows/sync-core-channel.yml
+    with:
+      prepared_run_id: ${{ inputs.prepared_run_id }}
+    secrets: inherit

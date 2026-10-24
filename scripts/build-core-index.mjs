@@ -56,12 +56,19 @@ function sharesShellContract(manifest, currentManifest) {
   return Number.isSafeInteger(contract) && manifest?.requiredShellContract === contract
 }
 
+export function sharesCoreRuntimeBaseline(manifest, currentManifest) {
+  const node = currentManifest?.component?.requiredNodeVersion
+  return sharesShellContract(manifest, currentManifest)
+    && typeof node === 'string' && node.length > 0
+    && manifest?.component?.requiredNodeVersion === node
+}
+
 function compatibleManifest(manifest, currentManifest) {
   if (sharesShellContract(manifest, currentManifest)) {
-    return manifest?.platform === currentManifest?.platform
+    return sharesCoreRuntimeBaseline(manifest, currentManifest)
+      && manifest?.platform === currentManifest?.platform
       && manifest?.requiredShellSchema <= currentManifest?.requiredShellSchema
       && manifest?.targetRuntimeLayout === currentManifest?.targetRuntimeLayout
-      && manifest?.component?.requiredNodeVersion === currentManifest?.component?.requiredNodeVersion
       && manifest?.component?.runtimeLayout === currentManifest?.component?.runtimeLayout
   }
   return manifest?.platform === currentManifest?.platform

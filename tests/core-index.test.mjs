@@ -47,7 +47,7 @@ async function makeIndex(options) {
 test('publisher tests this checkout and publishes one five-platform qualification to both legacy tags', async () => {
   const workflow = await readFile(new URL('../.github/workflows/sync-core-channel.yml', import.meta.url), 'utf8')
   const queue = await readFile(new URL('../.github/workflows/sync-core.yml', import.meta.url), 'utf8')
-  assert.match(workflow, /repository: WSL043\/DSH-Portable-Updates\s+ref: main\s+path: update-channel/)
+  assert.match(workflow, /repository: WSL043\/DSH-Portable-Updates\s+ref: \$\{\{ github\.sha \}\}\s+path: update-channel/)
   assert.match(workflow, /node --test update-channel\/tests\/\*\.test\.mjs/)
   assert.match(workflow, /node update-channel\/scripts\/build-core-index\.mjs/)
   assert.match(workflow, /for channel in stable candidate/)
