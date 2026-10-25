@@ -747,7 +747,7 @@ jobs:
               "publish/$channel"/channel-source.json "publish/$channel"/official-core.lock.json \
               "publish/$channel"/official-core-*.lock.json "publish/$channel"/qualification-source-*.json --clobber
           done
-      - name: Keep only archives and manifests referenced by each top-three catalog
+      - name: Keep archives and manifests referenced by the supported core catalogs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
