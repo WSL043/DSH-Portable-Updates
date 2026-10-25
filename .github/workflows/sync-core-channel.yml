@@ -48,7 +48,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: verified-core-single-lane
+  group: ${{ inputs.prepare_only && format('verified-core-prepare-{0}-{1}', inputs.source_sha, inputs.prepare_version) || 'verified-core-single-lane' }}
   cancel-in-progress: false
 
 jobs:
