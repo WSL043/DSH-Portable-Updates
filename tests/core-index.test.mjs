@@ -53,6 +53,11 @@ test('publisher tests this checkout and publishes one five-platform qualificatio
   assert.match(workflow, /for channel in stable candidate/)
   assert.match(workflow, /\.releaseChannel = "stable"/)
   assert.match(workflow, /qualification-state\.json/)
+  const preparationGroup = "group: ${{ inputs.prepare_only && format('verified-core-prepare-{0}-{1}', inputs.source_sha, inputs.prepare_version) || 'verified-core-single-lane' }}"
+  assert.ok(workflow.includes(preparationGroup))
+  assert.match(workflow, /concurrency:\r?\n[^\r\n]*\r?\n  cancel-in-progress: false(?:\r?\n|$)/)
+  assert.match(workflow, /^  publish:\r?\n[\s\S]*?^    if: .*&& !inputs\.prepare_only &&/m)
+  assert.match(workflow, /^  qualification-state:\r?\n[\s\S]*?^    if: .*&& !inputs\.prepare_only &&/m)
   assert.match(queue, /remaining:[\s\S]*default: 2/)
   assert.doesNotMatch(workflow + queue, /shell_channel|inputs\.channel|needs\.stable|needs\.candidate/)
 })
