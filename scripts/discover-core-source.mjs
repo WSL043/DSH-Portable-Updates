@@ -229,10 +229,30 @@ export async function discoverCoreSource({
     const entry = catalog?.schemaVersion === 1 && catalog.channel === 'stable' && catalog.platform === 'windows-x64'
       ? catalog.versions?.find(item => item.version === rebuildVersion) : null
     if (!entry || entry.manifest?.component?.dshVersion !== rebuildVersion) throw new Error('Target is not in the published catalog.')
-    if (!Number.isInteger(contract) || entry.manifest.requiredShellContract !== contract) throw new Error('Target shell contract differs from the published baseline.')
     const record = state.filter(item => item.version === rebuildVersion)
       .sort((a, b) => String(b.attemptedAt ?? '').localeCompare(String(a.attemptedAt ?? '')))[0]
     if (record?.status !== 'success') throw new Error('Target has no current successful qualification.')
+    if (!Number.isInteger(contract) || entry.manifest.requiredShellContract !== contract) {
+      // Exact envelopes cannot inherit a different Portable source's qualification, even if the version was reused.
+      if (!Number.isInteger(contract) || Object.hasOwn(entry.manifest, 'requiredShellContract')) {
+        throw new Error('Target shell contract differs from the published baseline.')
+      }
+      if (entry.manifest.portableVersion !== product.version) throw new Error('Target exact Portable version differs from the published baseline.')
+      if (!/^[a-f0-9]{40}$/.test(sourceSha) || record.sourceSha !== sourceSha) {
+        throw new Error('Target exact qualification belongs to another Portable source.')
+      }
+      let fingerprint
+      try {
+        const { computeShellFingerprint } = await import(pathToFileURL(path.join(portableRoot, 'scripts/shell-fingerprint.mjs')))
+        if (typeof computeShellFingerprint !== 'function') throw new Error('Fingerprint helper is unavailable.')
+        fingerprint = await computeShellFingerprint(portableRoot, 'windows')
+      } catch (cause) {
+        throw new Error('Published source cannot compute its actual shell fingerprint.', { cause })
+      }
+      if (!/^[a-f0-9]{64}$/.test(fingerprint ?? '') || entry.manifest.requiredShellFingerprint !== fingerprint) {
+        throw new Error('Target exact shell fingerprint differs from the published baseline.')
+      }
+    }
     const published = (await get(`${releaseBase}update-channel-core-stable/official-core-${rebuildVersion}.lock.json`))?.dsh
     const metadata = registry.versions[rebuildVersion]
     const integrity = metadata?.dist?.integrity
