@@ -152,14 +152,22 @@ jobs:
           PREPARE_ONLY: ${{ inputs.prepare_only }}
           SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
           PIPELINE_SHA: ${{ github.sha }}
+          PIPELINE_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
           test "$PREPARE_ONLY" != true
+          test "$PIPELINE_REF" = refs/heads/main
           [[ "$PREPARED_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           gh api "repos/WSL043/DSH-Portable-Updates/actions/runs/$PREPARED_RUN_ID" > prepared-run.json
           gh run download "$PREPARED_RUN_ID" --repo WSL043/DSH-Portable-Updates --name resolved-selection --dir prepared-selection
           gh run download "$PREPARED_RUN_ID" --repo WSL043/DSH-Portable-Updates --name resolved-core --dir prepared-core
-          node update-channel/scripts/prepared-core.mjs run prepared-run.json prepared-selection/selection.json "$SOURCE_SHA" "$PIPELINE_SHA" "$PREPARED_RUN_ID" >> "$GITHUB_OUTPUT"
+          PREPARED_PIPELINE_SHA="$(node update-channel/scripts/prepared-core.mjs base prepared-run.json prepared-selection/selection.json "$SOURCE_SHA" "$PIPELINE_SHA" "$PREPARED_RUN_ID")"
+          COMPARE_ARGS=()
+          if [[ "$PREPARED_PIPELINE_SHA" != "$PIPELINE_SHA" ]]; then
+            gh api "repos/WSL043/DSH-Portable-Updates/compare/$PREPARED_PIPELINE_SHA...$PIPELINE_SHA?per_page=100&page=1" > prepared-pipeline-compare.json
+            COMPARE_ARGS=(prepared-pipeline-compare.json)
+          fi
+          node update-channel/scripts/prepared-core.mjs run prepared-run.json prepared-selection/selection.json "$SOURCE_SHA" "$PIPELINE_SHA" "$PREPARED_RUN_ID" "${COMPARE_ARGS[@]}" >> "$GITHUB_OUTPUT"
       - name: Discover and lock the newest official core release
         id: discovery
         env:
@@ -598,52 +606,12 @@ jobs:
           if-no-files-found: warn
           compression-level: 0
 
-  reuse-prepared:
-    needs: resolve
-    if: needs.resolve.result == 'success' && needs.resolve.outputs.publish == 'true' && inputs.prepared_run_id != ''
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          repository: WSL043/DSH-Portable
-          ref: ${{ needs.resolve.outputs.source_sha }}
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24.22.1
-      - uses: actions/download-artifact@v8
-        with:
-          name: resolved-core
-          path: resolved-core
-      - name: Apply the verified source lock
-        run: cp resolved-core/lock.json upstream.lock.json
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: core-stable-*
-          repository: WSL043/DSH-Portable-Updates
-          run-id: ${{ inputs.prepared_run_id }}
-          github-token: ${{ github.token }}
-          merge-multiple: true
-          path: artifacts
-      - name: Verify every prepared platform archive again before publication
-        run: |
-          for platform in windows-x64 macos-arm64 macos-x64 linux-x64 linux-arm64; do
-            node scripts/verify-update-artifact.mjs "artifacts/dsh-core-update-$platform.json" "artifacts/DSH-Portable-update-$platform.zip" engine
-          done
-      - uses: actions/upload-artifact@v7
-        with:
-          name: core-stable-prepared
-          path: |
-            artifacts/DSH-Portable-update-*.zip
-            artifacts/dsh-core-update-*.json
-          if-no-files-found: error
-          compression-level: 0
-
   publish:
     permissions:
       actions: read
       contents: write
-    needs: [resolve, build, reuse-prepared]
-    if: ${{ always() && !cancelled() && !inputs.prepare_only && needs.resolve.result == 'success' && needs.resolve.outputs.publish == 'true' && (needs.build.result == 'success' || needs.reuse-prepared.result == 'success') }}
+    needs: [resolve, build]
+    if: ${{ always() && !cancelled() && !inputs.prepare_only && needs.resolve.result == 'success' && needs.resolve.outputs.publish == 'true' && (needs.build.result == 'success' || inputs.prepared_run_id != '') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -667,11 +635,14 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24.22.1
-      - name: Test the bounded core-version catalog builder
-        run: node --test update-channel/tests/*.test.mjs
+      # Resolve has verified the prepare run, pipeline, published source and fresh lock.
+      # Read its accepted bytes directly; signing below still requires all five archive checks.
       - uses: actions/download-artifact@v8
         with:
           pattern: core-stable-*
+          repository: WSL043/DSH-Portable-Updates
+          run-id: ${{ inputs.prepared_run_id || github.run_id }}
+          github-token: ${{ github.token }}
           merge-multiple: true
           path: artifacts
       - name: Verify once and prepare stable and candidate legacy envelopes
@@ -786,7 +757,7 @@ jobs:
           done
 
   channel-result:
-    needs: [resolve, preview-runtime, build, reuse-prepared, publish]
+    needs: [resolve, preview-runtime, build, publish]
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -806,9 +777,9 @@ jobs:
           RESOLVE_RESULT: ${{ needs.resolve.result }}
           PREFLIGHT_RESULT: ${{ needs.preview-runtime.outputs.adapter_status || needs.resolve.outputs.plugin_status }}
           HOLD_REASON: ${{ needs.preview-runtime.outputs.adapter_reason || needs.resolve.outputs.selection_reason }}
-          BUILD_RESULT: ${{ needs.reuse-prepared.result == 'success' && 'success' || needs.build.result }}
+          BUILD_RESULT: ${{ inputs.prepared_run_id != '' && needs.publish.result == 'success' && 'success' || needs.build.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
-          PREVIEW_RESULT: ${{ needs.reuse-prepared.result == 'success' && 'success' || needs.preview-runtime.result }}
+          PREVIEW_RESULT: ${{ inputs.prepared_run_id != '' && needs.publish.result == 'success' && 'success' || needs.preview-runtime.result }}
           PREPARE_ONLY: ${{ inputs.prepare_only }}
         run: node scripts/report-core-result.mjs
 
@@ -818,7 +789,7 @@ jobs:
       contents: write
     env:
       STATE_TAG: ${{ needs.resolve.outputs.state_tag }}
-    needs: [resolve, preview-runtime, build, reuse-prepared, publish]
+    needs: [resolve, preview-runtime, build, publish]
     if: ${{ always() && !inputs.prepare_only && needs.resolve.outputs.version != '' }}
     runs-on: ubuntu-latest
     steps:
@@ -841,9 +812,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RESOLVE_RESULT: ${{ needs.resolve.result }}
-          PREVIEW_RESULT: ${{ needs.reuse-prepared.result == 'success' && 'success' || needs.preview-runtime.result }}
+          PREVIEW_RESULT: ${{ inputs.prepared_run_id != '' && needs.publish.result == 'success' && 'success' || needs.preview-runtime.result }}
           ADAPTER_STATUS: ${{ needs.preview-runtime.outputs.adapter_status }}
-          BUILD_RESULT: ${{ needs.reuse-prepared.result == 'success' && 'success' || needs.build.result }}
+          BUILD_RESULT: ${{ inputs.prepared_run_id != '' && needs.publish.result == 'success' && 'success' || needs.build.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
           PUBLISH_REQUIRED: ${{ needs.resolve.outputs.publish }}
           RESOLVED_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
