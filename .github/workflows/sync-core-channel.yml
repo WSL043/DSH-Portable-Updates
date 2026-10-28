@@ -69,6 +69,7 @@ jobs:
       fingerprint: ${{ steps.plan.outputs.fingerprint }}
       top_three: ${{ steps.selection.outputs.top_three }}
       qualified_versions: ${{ steps.selection.outputs.qualified_versions }}
+      core_binding: ${{ steps.contract-defaults.outputs.binding }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -184,6 +185,10 @@ jobs:
         if: steps.discovery.outputs.publish == 'true'
         id: plugin-preflight
         run: node update-channel/scripts/preflight-adapters.mjs --default-peers-only portable-source resolved-core/lock.json > preflight.json
+      - name: Check the frozen contract default-plugin baseline
+        id: contract-defaults
+        if: steps.discovery.outputs.publish == 'true' && steps.plugin-preflight.outputs.status == 'success'
+        run: node update-channel/scripts/preflight-adapters.mjs --contract-default-peers portable-source resolved-core/lock.json >> "$GITHUB_OUTPUT"
       - name: Record a compatibility hold without starting a build
         if: steps.plugin-preflight.outputs.status == 'blocked'
         run: |
@@ -497,6 +502,11 @@ jobs:
           DSH_PORTABLE_CORE_CHANNEL: stable
         run: |
           bash scripts/build-linux.sh "${{ matrix.arch }}"
+      - name: Bind the core envelope before its real platform smoke
+        shell: bash
+        env:
+          CORE_BINDING: ${{ needs.resolve.outputs.core_binding }}
+        run: node update-channel/scripts/preflight-adapters.mjs --bind-core-envelope '${{ matrix.artifact }}' "$CORE_BINDING"
       - name: Verify and smoke the core update on the exact base product
         if: matrix.platform == 'windows'
         shell: powershell
@@ -671,6 +681,7 @@ jobs:
           SELECTED_VERSION: ${{ needs.resolve.outputs.version }}
           TOP_THREE: ${{ needs.resolve.outputs.top_three }}
           QUALIFIED_VERSIONS: ${{ needs.resolve.outputs.qualified_versions }}
+          CORE_BINDING: ${{ needs.resolve.outputs.core_binding }}
         run: |
           set -euo pipefail
           test -n "$SELECTED_VERSION"
@@ -691,6 +702,7 @@ jobs:
           for platform in windows-x64 macos-arm64 macos-x64 linux-x64 linux-arm64; do
             MANIFEST="artifacts/dsh-core-update-${platform}.json"
             ZIP="artifacts/DSH-Portable-update-${platform}.zip"
+            node update-channel/scripts/preflight-adapters.mjs --bind-core-envelope "$platform" "$CORE_BINDING"
             node scripts/verify-update-artifact.mjs "$MANIFEST" "$ZIP" engine
             HASH="$(sha256sum "$ZIP" | cut -d' ' -f1)"
             VERSION="$(jq -jr '.component.dshVersion' "$MANIFEST" | tr -c 'A-Za-z0-9._-' '-')"

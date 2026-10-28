@@ -31,11 +31,17 @@ test('targeted refresh only rebuilds an already qualified signed-catalog version
     { name: 'rejects changed published commit', badCommit: true, error: /commit/ },
     { name: 'rejects invalid catalog signature', badSignature: true, error: /signature/ },
     { name: 'rejects another shell contract', badContract: true, error: /contract/ },
+    { name: 'allows an exact envelope qualified on this actual source', exact: true },
+    { name: 'rejects exact envelope with another fingerprint', exact: true, badFingerprint: true, error: /exact shell fingerprint/ },
+    { name: 'rejects exact envelope with another Portable version', exact: true, badPortableVersion: true, error: /exact Portable version/ },
+    { name: 'rejects exact qualification on another source', exact: true, badSource: true, error: /another Portable source/ },
+    { name: 'rejects exact envelope missing its fingerprint', exact: true, missingFingerprint: true, error: /exact shell fingerprint/ },
+    { name: 'rejects exact source without a fingerprint helper', exact: true, missingFingerprintHelper: true, error: /cannot compute.*fingerprint/ },
   ]
   for (const scenario of cases) await t.test(scenario.name, async st => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'core-targeted-refresh-'))
     st.after(() => rm(root, { recursive: true, force: true }))
-    for (const directory of ['app', 'config', 'launcher']) await mkdir(path.join(root, directory))
+    for (const directory of ['app', 'config', 'launcher', 'scripts']) await mkdir(path.join(root, directory))
     const version = scenario.version || qualified[1]
     const sri = v => `sha512-${createHash('sha512').update(v).digest('base64')}`
     const commits = Object.fromEntries([...qualified, '0.2.1-alpha.4', '0.2.1-rc.3'].map((v, i) => [v, String(i + 1).repeat(40)]))
@@ -47,15 +53,25 @@ test('targeted refresh only rebuilds an already qualified signed-catalog version
     await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '0.9.5' }))
     await writeFile(path.join(root, 'app/package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {} }))
     await writeFile(path.join(root, 'config/shell-contract.json'), JSON.stringify({ contract: 2 }))
+    const shellMarker = Buffer.from('the actual selected published shell bytes')
+    await writeFile(path.join(root, 'launcher/source-marker.mjs'), shellMarker)
+    const actualFingerprint = createHash('sha256').update(shellMarker).digest('hex')
+    if (!scenario.missingFingerprintHelper) await writeFile(path.join(root, 'scripts/shell-fingerprint.mjs'),
+      "import { createHash } from 'node:crypto'; import { readFile } from 'node:fs/promises'; import path from 'node:path'; export async function computeShellFingerprint(root, platform) { if (platform !== 'windows') throw Error('Wrong platform'); return createHash('sha256').update(await readFile(path.join(root, 'launcher/source-marker.mjs'))).digest('hex'); }")
     const registry = { versions: Object.fromEntries(['0.2.1-rc.3', ...qualified, '0.2.1-alpha.4'].map(v => [v, { dist: { integrity: sri(v) } }])) }
     const catalogVersions = scenario.blocked ? [...qualified, version] : qualified
     const catalog = JSON.stringify({ schemaVersion: 1, channel: 'stable', platform: 'windows-x64', versions: catalogVersions.map(v => ({ version: v,
-      manifest: { requiredShellContract: scenario.badContract && v === version ? 3 : 2, component: { dshVersion: v, dshCommit: commits[v] } } })) })
+      manifest: { ...(scenario.exact ? {
+        portableVersion: scenario.badPortableVersion && v === version ? '0.9.4' : '0.9.5',
+        ...(scenario.missingFingerprint && v === version ? {} : {
+          requiredShellFingerprint: scenario.badFingerprint && v === version ? 'f'.repeat(64) : actualFingerprint }),
+      } : { requiredShellContract: scenario.badContract && v === version ? 3 : 2 }),
+      component: { dshVersion: v, dshCommit: commits[v] } } })) })
     const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
     const pem = publicKey.export({ type: 'spki', format: 'pem' })
     await writeFile(path.join(root, 'launcher/update-signature.mjs'), `import { verify } from 'node:crypto'; export const verifyUpdateSignature = (bytes, signature) => verify('sha256', bytes, { key: ${JSON.stringify(pem)}, dsaEncoding: 'ieee-p1363' }, Buffer.from(signature.trim(), 'base64'));`)
     const signature = scenario.badSignature ? 'invalid' : sign('sha256', Buffer.from(catalog), { key: privateKey, dsaEncoding: 'ieee-p1363' }).toString('base64')
-    const state = catalogVersions.map(v => ({ version: v, sourceSha: 'a'.repeat(40), status: scenario.blocked && v === version ? 'blocked' : 'success', attemptedAt: '2026-10-21T00:00:00Z' }))
+    const state = catalogVersions.map(v => ({ version: v, sourceSha: (scenario.exact && !(scenario.badSource && v === version) ? 'b' : 'a').repeat(40), status: scenario.blocked && v === version ? 'blocked' : 'success', attemptedAt: '2026-10-21T00:00:00Z' }))
     st.mock.method(globalThis, 'fetch', async url => {
       const request = new URL(url), name = request.pathname.split('/').at(-1)
       if (request.hostname === 'registry.npmjs.org') return Response.json(registry)
@@ -73,7 +89,13 @@ test('targeted refresh only rebuilds an already qualified signed-catalog version
     const call = () => discoverCoreSource({ portableRoot: root, output, selection: path.join(root, 'selection.json'), stateOutput: path.join(root, 'state.json'),
       sourceSha: 'b'.repeat(40), rebuild: scenario.prepareOnly ? false : scenario.rebuild !== false,
       rebuildVersion: scenario.prepareOnly ? '' : version, prepareOnly: scenario.prepareOnly || false, prepareVersion: scenario.prepareOnly ? version : '' })
-    if (scenario.error) await assert.rejects(call, scenario.error)
+    if (scenario.error) {
+      await assert.rejects(call, scenario.error)
+      if (scenario.exact) {
+        assert.equal(await readFile(path.join(root, 'upstream.lock.json'), 'utf8'), original)
+        await assert.rejects(readFile(output), { code: 'ENOENT' })
+      }
+    }
     else {
       assert.equal((await call()).version, version)
       const locked = JSON.parse(await readFile(output, 'utf8'))
