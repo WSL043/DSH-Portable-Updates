@@ -58,6 +58,7 @@ jobs:
       attempted: ${{ steps.discovery.outputs.publish }}
       publish: ${{ steps.selection.outputs.publish }}
       version: ${{ steps.selection.outputs.version }}
+      held_version: ${{ steps.selection.outputs.held_version }}
       selection_status: ${{ steps.selection.outputs.status }}
       selection_reason: ${{ steps.selection.outputs.reason }}
       state_tag: ${{ steps.source.outputs.state_tag }}
@@ -193,7 +194,7 @@ jobs:
         if: steps.discovery.outputs.publish == 'true'
         id: plugin-preflight
         run: node update-channel/scripts/preflight-adapters.mjs --default-peers-only portable-source resolved-core/lock.json > preflight.json
-      - name: Check the frozen contract default-plugin baseline
+      - name: Bind the core envelope to the published default-plugin policy
         id: contract-defaults
         if: steps.discovery.outputs.publish == 'true' && steps.plugin-preflight.outputs.status == 'success'
         run: node update-channel/scripts/preflight-adapters.mjs --contract-default-peers portable-source resolved-core/lock.json >> "$GITHUB_OUTPUT"
@@ -243,9 +244,9 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -f selection.json ]]; then
-            jq -r '"version=" + (.version // ""), "publish=" + ((.publish // false) | tostring), "status=" + (.status // "unknown"), "reason=" + ((.reason // "") | gsub("[\r\n]"; " ") | .[0:400]), "top_three=" + ((.topThree // []) | tojson), "qualified_versions=" + ((.qualifiedVersions // []) | tojson)' selection.json >> "$GITHUB_OUTPUT"
+            jq -r '"version=" + (.version // ""), "held_version=" + (.heldVersion // ""), "publish=" + ((.publish // false) | tostring), "status=" + (.status // "unknown"), "reason=" + ((.reason // "") | gsub("[\r\n]"; " ") | .[0:400]), "top_three=" + ((.topThree // []) | tojson), "qualified_versions=" + ((.qualifiedVersions // []) | tojson)' selection.json >> "$GITHUB_OUTPUT"
           else
-            printf 'version=\npublish=false\nstatus=unresolved\nreason=\ntop_three=[]\nqualified_versions=[]\n' >> "$GITHUB_OUTPUT"
+            printf 'version=\nheld_version=\npublish=false\nstatus=unresolved\nreason=\ntop_three=[]\nqualified_versions=[]\n' >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/upload-artifact@v7
         if: always()
@@ -771,11 +772,12 @@ jobs:
         env:
           CHANNEL: stable
           VERSION: ${{ needs.resolve.outputs.version }}
+          HELD_VERSION: ${{ needs.resolve.outputs.held_version }}
           SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           SELECTED: ${{ needs.resolve.outputs.publish }}
           CORE_TAG: ${{ needs.resolve.outputs.state_tag }}
           RESOLVE_RESULT: ${{ needs.resolve.result }}
-          PREFLIGHT_RESULT: ${{ needs.preview-runtime.outputs.adapter_status || needs.resolve.outputs.plugin_status }}
+          PREFLIGHT_RESULT: ${{ needs.preview-runtime.outputs.adapter_status || needs.resolve.outputs.plugin_status || (needs.resolve.outputs.selection_status == 'blocked' && 'blocked') }}
           HOLD_REASON: ${{ needs.preview-runtime.outputs.adapter_reason || needs.resolve.outputs.selection_reason }}
           BUILD_RESULT: ${{ inputs.prepared_run_id != '' && needs.publish.result == 'success' && 'success' || needs.build.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}

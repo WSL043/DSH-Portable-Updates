@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { coreResult } from '../scripts/report-core-result.mjs'
+import { coreResult, coreResultExitCode } from '../scripts/report-core-result.mjs'
 
 const base = {channel:'candidate',version:'0.1.7-alpha.2',source:'source',selected:'true',resolve:'success',preflight:'success',build:'success',publish:'success',tag:'update-channel-core-candidate'}
 test('only completed publication claims delivery and links its channel', () => {
@@ -27,4 +27,21 @@ test('preparation reports success only after source, runtime, and every platform
   for (const changes of [{ build: 'failure' }, { preview: 'failure' }, { publish: 'success' }]) {
     assert.match(coreResult({ ...prepared, ...changes }), /准备失败/)
   }
+})
+
+test('an existing qualification hold names its held version without claiming a build', () => {
+  const result = coreResult({...base, version: null, heldVersion: '0.2.1-rc.5', selected: 'false',
+    preflight: 'blocked', build: 'skipped', publish: 'skipped', reason: 'Known pinned plugin hold.'})
+  assert.match(result, /验收受阻/)
+  assert.match(result, /Core: 0\.2\.1-rc\.5/)
+  assert.match(result, /platforms: skipped; publish: skipped/)
+  assert.doesNotMatch(result, /无需重新验证|Published channel/)
+})
+
+test('known holds fail the result job while ordinary completed discovery remains a no-op', () => {
+  assert.equal(coreResultExitCode({...base, selected: 'false', preflight: 'blocked', build: 'skipped', publish: 'skipped'}), 1)
+  assert.equal(coreResultExitCode({...base, preflight: 'blocked', build: 'skipped', publish: 'skipped'}), 1)
+  assert.equal(coreResultExitCode({...base, selected: 'false', preflight: undefined, build: 'skipped', publish: 'skipped'}), 0)
+  assert.equal(coreResultExitCode({...base, prepareOnly: true, preview: 'success', publish: 'skipped'}), 0)
+  assert.equal(coreResultExitCode({...base, prepareOnly: true, preview: 'failure', publish: 'skipped'}), 1)
 })

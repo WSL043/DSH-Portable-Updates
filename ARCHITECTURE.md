@@ -35,7 +35,12 @@ behavior. Publishing an official core must not create a Portable release.
    newest version does not prevent an older missing version from being tested.
    A corrected intake-pipeline revision retries failed versions immediately;
    already qualified versions do not need rebuilding for a pipeline-only change.
-4. Run the existing five-platform installation, startup, plugin preservation and
+4. Default-plugin qualification follows the selected published product. An explicit
+   empty table uses the existing exact Portable-version and shell-fingerprint envelope,
+   avoiding the legacy contract-2 plugin baseline without widening older shells.
+   Baselines that bundle plugins retain their existing peer and frozen-contract checks.
+   User-installed optional plugins are neither removed nor activated by core intake.
+   Run the existing five-platform installation, startup, plugin preservation and
    rollback gates. Publish only successful component archives and catalogs.
    A prepare-only run may retain those artifacts before the Native release;
    promotion reuses them only when the published source, reviewed pipeline and

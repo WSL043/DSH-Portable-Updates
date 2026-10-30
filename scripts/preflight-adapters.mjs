@@ -182,6 +182,21 @@ export function checkContractDefaultPluginBinding(contract, lock, manifests, dsh
     baselineSource: baseline.sourceSha, peerStatus: result.status, ...(result.reason ? { reason: result.reason } : {}) }
 }
 
+/** Empty defaults qualify only this published product; optional plugins cannot hold its core intake. */
+export async function resolveCoreDefaultPluginBinding(contract, productLock, dshVersion, semver, request = fetch) {
+  if (!Number.isSafeInteger(contract) || contract < 1 || !isValidSemVer(dshVersion)) {
+    throw new Error('A valid shell contract and core version are required.')
+  }
+  const defaults = productLock?.defaultPlugins
+  if (!defaults || typeof defaults !== 'object' || Array.isArray(defaults)) {
+    throw new Error('Published default-plugin membership is invalid.')
+  }
+  if (Object.keys(defaults).length === 0) return { status: 'success', binding: 'exact',
+    baselineSource: '', reason: 'This published Portable baseline has no default plugins; preserve its exact shell envelope.' }
+  const { lock, manifests } = await fetchContractDefaultPluginManifests(contract, request)
+  return checkContractDefaultPluginBinding(contract, lock, manifests, dshVersion, semver)
+}
+
 export function bindCoreManifestDefaultPlugins(manifest, binding, { portableVersion, shellContract }) {
   if (!['contract', 'exact'].includes(binding) || !isValidSemVer(portableVersion)
     || !Number.isSafeInteger(shellContract) || shellContract < 1 || manifest?.updateKind !== 'engine'
@@ -227,9 +242,10 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
     const root = path.resolve(second)
     const contract = JSON.parse(await readFile(path.join(root, 'config/shell-contract.json'), 'utf8')).contract
     const candidate = JSON.parse(await readFile(third, 'utf8'))
-    const { lock, manifests } = await fetchContractDefaultPluginManifests(contract)
+    const product = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'))
+    const productLock = JSON.parse(await readFile(path.join(root, product.version.includes('-') ? 'upstream.preview.lock.json' : 'upstream.lock.json'), 'utf8'))
     const semver = createRequire(path.join(root, 'app/package.json'))('semver')
-    const result = checkContractDefaultPluginBinding(contract, lock, manifests, candidate.dsh.version, semver)
+    const result = await resolveCoreDefaultPluginBinding(contract, productLock, candidate.dsh.version, semver)
     console.error(JSON.stringify(result))
     console.log('binding=' + result.binding)
     console.log('baseline_source=' + result.baselineSource)
