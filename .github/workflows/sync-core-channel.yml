@@ -63,6 +63,7 @@ jobs:
       selection_reason: ${{ steps.selection.outputs.reason }}
       state_tag: ${{ steps.source.outputs.state_tag }}
       source_sha: ${{ steps.source.outputs.source_sha }}
+      tooling_sha: ${{ steps.ui-tooling.outputs.tooling_sha }}
       release_tag: ${{ steps.source.outputs.release_tag }}
       plugin_status: ${{ steps.plugin-preflight.outputs.status }}
       run_id: ${{ steps.source.outputs.run_id }}
@@ -135,6 +136,16 @@ jobs:
           echo "lock_file=$LOCK_FILE" >> "$GITHUB_OUTPUT"
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "source_version=$SOURCE_VERSION" >> "$GITHUB_OUTPUT"
+      - name: Resolve the trusted Native UI verifier independently of the product baseline
+        id: ui-tooling
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TOOLING_SHA="$(gh api repos/WSL043/DSH-Portable/git/ref/heads/main --jq '.object.sha')"
+          [[ "$TOOLING_SHA" =~ ^[0-9a-f]{40}$ ]]
+          echo "tooling_sha=$TOOLING_SHA" >> "$GITHUB_OUTPUT"
+          echo "Native UI verifier Portable main SHA: $TOOLING_SHA"
       - uses: actions/checkout@v7
         with:
           repository: WSL043/DSH-Portable
@@ -539,18 +550,57 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows core subprocess visibility smoke failed.' }
           & node scripts/smoke-windows-startup-theme.mjs $BaselineRoot --disposable
           if ($LASTEXITCODE -ne 0) { throw 'Windows core startup and theme smoke failed.' }
+      - name: Check out only the pinned Native UI verifier
+        if: matrix.platform == 'windows'
+        uses: actions/checkout@v7
+        with:
+          repository: WSL043/DSH-Portable
+          ref: ${{ needs.resolve.outputs.tooling_sha }}
+          path: portable-ui-tooling
+          sparse-checkout: scripts/verify-default-plugin-ui.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
       - name: Exercise default plugins in the updated native Windows product
         if: matrix.platform == 'windows'
         shell: powershell
+        env:
+          TOOLING_SHA: ${{ needs.resolve.outputs.tooling_sha }}
+          PRODUCT_SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          PIPELINE_SHA: ${{ github.sha }}
         run: |
+          $ErrorActionPreference = 'Stop'
+          $BaselineRoot = Join-Path $env:RUNNER_TEMP 'core-acceptance/DSH-Portable'
+          $Verifier = 'portable-ui-tooling/scripts/verify-default-plugin-ui.mjs'
+          $VerifierSource = 'portable-main'
+          $VerifierSourceSha = $env:TOOLING_SHA
+          # Compatibility fallback is only for an absent file, never a failed checkout or UI assertion.
+          if (-not (Test-Path -LiteralPath $Verifier)) {
+            $Verifier = 'scripts/verify-default-plugin-ui.mjs'
+            $VerifierSource = 'portable-baseline'
+            $VerifierSourceSha = $env:PRODUCT_SOURCE_SHA
+            if (-not (Test-Path -LiteralPath $Verifier)) {
+              $Verifier = 'update-channel/scripts/verify-default-plugin-ui.mjs'
+              $VerifierSource = 'update-channel'
+              $VerifierSourceSha = $env:PIPELINE_SHA
+            }
+          }
+          if (-not (Test-Path -LiteralPath $Verifier -PathType Leaf)) { throw "Native UI verifier is missing: $Verifier" }
+          $ToolingEvidence = [ordered]@{
+            schemaVersion = 1
+            productSourceSha = $env:PRODUCT_SOURCE_SHA
+            toolingSha = $env:TOOLING_SHA
+            source = $VerifierSource
+            sourceSha = $VerifierSourceSha
+            path = $Verifier
+            sha256 = (Get-FileHash -LiteralPath $Verifier -Algorithm SHA256).Hash.ToLowerInvariant()
+          }
+          $EvidenceRoot = Join-Path $BaselineRoot 'acceptance'
+          New-Item -ItemType Directory -Force -Path $EvidenceRoot | Out-Null
+          $ToolingEvidence | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'native-ui-tooling.json') -Encoding UTF8
+          $ToolingEvidence | ConvertTo-Json -Compress | Write-Host
           $DriverRoot = Join-Path $env:RUNNER_TEMP 'core-ui-driver'
           & npm install --prefix $DriverRoot --ignore-scripts --no-audit --no-fund playwright@1.63.0
           if ($LASTEXITCODE -ne 0) { throw 'Native plugin UI driver installation failed.' }
-          $BaselineRoot = Join-Path $env:RUNNER_TEMP 'core-acceptance/DSH-Portable'
-          # The verifier ships with the Portable shell it verifies, so a shell that changes its first-run flow brings
-          # the matching verifier. Shells published before that fall back to the copy kept in this repository.
-          $Verifier = 'scripts/verify-default-plugin-ui.mjs'
-          if (-not (Test-Path -LiteralPath $Verifier)) { $Verifier = 'update-channel/scripts/verify-default-plugin-ui.mjs' }
           & node $Verifier $BaselineRoot (Join-Path $DriverRoot 'package.json') --disposable
           if ($LASTEXITCODE -ne 0) { throw 'Default plugin native UI qualification failed; core publication is blocked.' }
       - name: Verify and smoke the core update on the exact base product
