@@ -332,11 +332,31 @@ test('cores the catalog already offers for this shell contract are retained, oth
   ] }
   const topThree = ['0.2.1-rc.2', '0.2.1-rc.1', '0.2.1-alpha.5', '0.2.1-alpha.4']
   const state = [{ sourceSha: 'new', version: '0.2.1-rc.2', status: 'success' }]
-  const records = retainedRecords({ topThree, index, contract: 1, nodeVersion: '24.22.1', sourceSha: 'new', state, attemptedAt: 'now' })
+  const productLock = { defaultPlugins: { keep: 'published-shell' } }
+  const records = retainedRecords({ topThree, index, contract: 1, nodeVersion: '24.22.1', sourceSha: 'new', state, attemptedAt: 'now', productLock })
   assert.deepEqual(records.map(item => item.version), ['0.2.1-rc.1'], 'already qualified on this shell, wrong contract and out-of-window versions are not added')
   assert.equal(records[0].status, 'success')
-  assert.deepEqual(retainedRecords({ topThree, index, contract: 1, sourceSha: 'new', state: [], attemptedAt: 'now' }), [], 'Unknown Node baseline cannot inherit success')
-  assert.deepEqual(retainedRecords({ topThree, index, contract: undefined, sourceSha: 'new', state: [], attemptedAt: 'now' }), [])
+  assert.deepEqual(retainedRecords({ topThree, index, contract: 1, sourceSha: 'new', state: [], attemptedAt: 'now', productLock }), [], 'Unknown Node baseline cannot inherit success')
+  assert.deepEqual(retainedRecords({ topThree, index, contract: undefined, sourceSha: 'new', state: [], attemptedAt: 'now', productLock }), [])
+})
+
+
+test('empty defaults requeue every old contract-qualified core for the exact new baseline', async () => {
+  const { retainedRecords } = await import('../scripts/discover-core-source.mjs')
+  const topThree = [...versions].reverse()
+  const index = { versions: topThree.map(version => ({ version, manifest: {
+    portableVersion: '0.9.8', requiredShellContract: 2, component: { requiredNodeVersion: '24.22.1' },
+  } })) }
+  const state = topThree.map(version => ({ sourceSha: 'old-shell', version, status: 'success' }))
+  const records = retainedRecords({ topThree, index, contract: 2, nodeVersion: '24.22.1',
+    sourceSha: 'new-shell', state, attemptedAt: 'now', productLock: { defaultPlugins: {} } })
+  assert.deepEqual(records, [], 'a compatible old contract must not synthesize new exact-baseline success')
+  const progress = [...state, ...records]
+  for (const version of topThree) {
+    assert.equal(selectCoreRelease(registry, current, false, { sourceSha: 'new-shell', state: progress }).version, version)
+    progress.push({ sourceSha: 'new-shell', version, status: 'success' })
+  }
+  assert.equal(selectCoreRelease(registry, current, false, { sourceSha: 'new-shell', state: progress }).version, null)
 })
 
 test('known blocked candidates remain visible when no build can start', () => {
