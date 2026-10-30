@@ -102,14 +102,22 @@ export function selectCoreRelease(registry, current, acceptedOnly = false, {
   }
   candidates.sort((left, right) => compareVersions(right.version, left.version))
   const awaiting = new Set(awaitingSourceTag)
+  const blockedCandidates = []
   for (const candidate of candidates) {
     if (awaiting.has(candidate.version)) continue
     const record = records
       .filter(item => item?.sourceSha === sourceSha && item?.version === candidate.version)
       .sort((left, right) => String(right.attemptedAt ?? '').localeCompare(String(left.attemptedAt ?? '')))[0]
-    if (record?.status === 'success' || cooling(record, now, pipelineSha, peersHash)) continue
+    if (record?.status === 'success') continue
+    if (cooling(record, now, pipelineSha, peersHash)) {
+      if (record.status === 'blocked') blockedCandidates.push({ version: candidate.version, adapter: record.adapter, reason: record.reason })
+      continue
+    }
     return { version: candidate.version, integrity: candidate.integrity, topThree, status: 'selected' }
   }
+  if (blockedCandidates.length) return { version: null, integrity: null, topThree, status: 'blocked',
+    heldVersion: blockedCandidates[0].version, blockedCandidates,
+    reason: blockedCandidates.map(item => `${item.version}: ${item.reason || item.adapter || 'Qualification remains blocked.'}`).join('; ') }
   return { version: null, integrity: null, topThree, status: 'skip',
     reason: awaiting.size ? 'awaiting-source-tag' : 'no-unverified-candidate' }
 }
@@ -307,6 +315,7 @@ export async function discoverCoreSource({
     publish: Boolean(selected.version),
     status: selected.status,
     reason: selected.reason,
+    ...(selected.blockedCandidates ? { heldVersion: selected.heldVersion, blockedCandidates: selected.blockedCandidates } : {}),
     awaitingSourceTag,
     attemptedAt,
   })

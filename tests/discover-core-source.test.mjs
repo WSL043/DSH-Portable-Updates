@@ -338,3 +338,16 @@ test('cores the catalog already offers for this shell contract are retained, oth
   assert.deepEqual(retainedRecords({ topThree, index, contract: 1, sourceSha: 'new', state: [], attemptedAt: 'now' }), [], 'Unknown Node baseline cannot inherit success')
   assert.deepEqual(retainedRecords({ topThree, index, contract: undefined, sourceSha: 'new', state: [], attemptedAt: 'now' }), [])
 })
+
+test('known blocked candidates remain visible when no build can start', () => {
+  const state = Object.keys(registry.versions).map(version => ({ sourceSha: 'shell', pipelineSha: 'pipe', version,
+    status: 'blocked', adapter: 'default-plugin-peers', reason: 'Pinned plugin excludes this core.' }))
+  const result = selectCoreRelease(registry, current, false, { sourceSha: 'shell', pipelineSha: 'pipe', state })
+  assert.equal(result.version, null, 'a hold must never become an attempted build or a qualification success')
+  assert.equal(result.status, 'blocked')
+  assert.equal(result.heldVersion, '0.2.0')
+  assert.equal(result.blockedCandidates.length, result.topThree.length)
+  assert.match(result.reason, /0\.2\.0: Pinned plugin excludes this core/)
+  assert.doesNotMatch(result.reason, /no-unverified-candidate/)
+  assert.equal(selectCoreRelease(registry, current, false, { sourceSha: 'new-shell', pipelineSha: 'pipe', state }).version, '0.2.0')
+})

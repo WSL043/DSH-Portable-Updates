@@ -5,7 +5,7 @@ import { gzipSync } from 'node:zlib'
 import { isValidSemVer } from '../scripts/build-core-index.mjs'
 import { ADAPTERS, preflightAdapters, checkDefaultPluginCapabilities, checkDefaultPluginPeers, fetchPinnedDefaultPluginManifests,
   CONTRACT_DEFAULT_PLUGIN_BASELINES, readVerifiedDefaultPluginManifest, fetchContractDefaultPluginManifests,
-  checkContractDefaultPluginBinding, bindCoreManifestDefaultPlugins } from '../scripts/preflight-adapters.mjs'
+  checkContractDefaultPluginBinding, resolveCoreDefaultPluginBinding, bindCoreManifestDefaultPlugins } from '../scripts/preflight-adapters.mjs'
 import { selectCoreRelease } from '../scripts/discover-core-source.mjs'
 import { updateQualificationState } from '../scripts/update-qualification-state.mjs'
 
@@ -168,4 +168,19 @@ test('narrowing a core envelope changes only the existing contract field and is 
     { ...manifest, requiredShellContract: 3 },
     { ...manifest, requiredShellContract: null },
   ]) assert.throws(() => bindCoreManifestDefaultPlugins(bad, 'exact', identity), /cannot be bound/)
+})
+
+test('an explicit empty-default baseline preserves an exact envelope without contacting optional plugins', async () => {
+  let requests = 0
+  const request = async () => { requests++; throw new Error('Unexpected plugin request') }
+  const result = await resolveCoreDefaultPluginBinding(2, { defaultPlugins: {} }, '0.2.1-rc.5', peerSemver, request)
+  assert.equal(result.binding, 'exact')
+  assert.equal(result.status, 'success')
+  assert.equal(requests, 0)
+  assert.equal(checkDefaultPluginPeers({ defaultPlugins: {} }, {}, '0.2.1-rc.5', peerSemver.satisfies).status, 'success')
+  for (const invalid of [undefined, null, [], 'invalid']) {
+    await assert.rejects(resolveCoreDefaultPluginBinding(2, { defaultPlugins: invalid }, '0.2.1-rc.5', peerSemver, request), /membership/)
+  }
+  await assert.rejects(resolveCoreDefaultPluginBinding(2, contractPeerLock, '0.2.1-rc.5', peerSemver, request), /Unexpected plugin request/)
+  assert.ok(requests > 0, 'published baselines that still bundle plugins retain their reviewed frozen gate')
 })
