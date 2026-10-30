@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url'
 import { compareVersions, isValidSemVer, sharesCoreRuntimeBaseline } from './build-core-index.mjs'
 import { selectCoreWindow } from './core-window.mjs'
 import { mergeQualificationStates } from './update-qualification-state.mjs'
+import { hasEmptyDefaultPlugins } from './preflight-adapters.mjs'
 
 
 function stateRecords(value) {
@@ -19,8 +20,11 @@ function stateRecords(value) {
  * shell interface it was built against, not for one Portable commit (docs/shell-contract.md in DSH-Portable), so a
  * new shell with the same contract and Node runtime keeps them without another five-platform run.
  */
-export function retainedRecords({ topThree, index, contract, nodeVersion, sourceSha, state, attemptedAt }) {
-  if (!Number.isInteger(contract) || !sourceSha || !Array.isArray(index?.versions)) return []
+export function retainedRecords({ topThree, index, contract, nodeVersion, sourceSha, state, attemptedAt, productLock }) {
+  if (!Number.isInteger(contract) || !sourceSha || !Array.isArray(index?.versions) || !productLock) return []
+  // Empty defaults bind publication to the exact product. Contract compatibility
+  // cannot turn an older capsule into a fresh qualification for that baseline.
+  if (hasEmptyDefaultPlugins(productLock)) return []
   const here = new Set(stateRecords(state).filter(item => item?.sourceSha === sourceSha && item?.status === 'success').map(item => item.version))
   return index.versions
     .filter(entry => topThree.includes(entry?.version) && !here.has(entry.version)
@@ -275,7 +279,7 @@ export async function discoverCoreSource({
     lock.dsh = selectIdentity(published)
     targeted = { version: rebuildVersion, integrity, topThree, status: 'selected', reason: 'qualified-rebuild' }
   }
-  state.push(...retainedRecords({ topThree, index: stableIndex, contract, nodeVersion: lock.node?.version, sourceSha, state, attemptedAt }))
+  state.push(...retainedRecords({ topThree, index: stableIndex, contract, nodeVersion: lock.node?.version, sourceSha, state, attemptedAt, productLock: lock }))
   await writeSelection(stateOutput, state)
   // An accepted-only refresh reuses a published in-window core, never a newer
   // Portable source lock or an unqualified registry version.

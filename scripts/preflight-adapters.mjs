@@ -182,16 +182,20 @@ export function checkContractDefaultPluginBinding(contract, lock, manifests, dsh
     baselineSource: baseline.sourceSha, peerStatus: result.status, ...(result.reason ? { reason: result.reason } : {}) }
 }
 
+export function hasEmptyDefaultPlugins(productLock) {
+  const defaults = productLock?.defaultPlugins
+  if (!defaults || typeof defaults !== 'object' || Array.isArray(defaults)) {
+    throw new Error('Published default-plugin membership is invalid.')
+  }
+  return Object.keys(defaults).length === 0
+}
+
 /** Empty defaults qualify only this published product; optional plugins cannot hold its core intake. */
 export async function resolveCoreDefaultPluginBinding(contract, productLock, dshVersion, semver, request = fetch) {
   if (!Number.isSafeInteger(contract) || contract < 1 || !isValidSemVer(dshVersion)) {
     throw new Error('A valid shell contract and core version are required.')
   }
-  const defaults = productLock?.defaultPlugins
-  if (!defaults || typeof defaults !== 'object' || Array.isArray(defaults)) {
-    throw new Error('Published default-plugin membership is invalid.')
-  }
-  if (Object.keys(defaults).length === 0) return { status: 'success', binding: 'exact',
+  if (hasEmptyDefaultPlugins(productLock)) return { status: 'success', binding: 'exact',
     baselineSource: '', reason: 'This published Portable baseline has no default plugins; preserve its exact shell envelope.' }
   const { lock, manifests } = await fetchContractDefaultPluginManifests(contract, request)
   return checkContractDefaultPluginBinding(contract, lock, manifests, dshVersion, semver)
