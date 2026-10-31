@@ -1,0 +1,15 @@
+{
+  "catalogEntries": 7924,
+  "included": 7545,
+  "counts": {
+    "npm": 4092,
+    "tarball": 399,
+    "git": 3054
+  },
+  "skips": {
+    "release tag has no readable package.json": 19,
+    "duplicate package name": 330,
+    "repository has no readable package.json": 18,
+    "no default branch commit": 12
+  }
+}
