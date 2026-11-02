@@ -261,11 +261,15 @@ export function npmIcon(icon, name, version) {
 }
 
 /**
- * What npm calls the latest release of each npm-listed plugin: version, DSH range and icon. A lookup that keeps failing
- * leaves the catalog's data for that plugin; the second value counts how each lookup ended so a rate-limited run is visible.
+ * Read npm latest metadata. If the registry stays unavailable, read the catalog's exact published package.json
+ * from jsDelivr; this does not claim to discover a newer version. Count both paths so degraded runs stay visible.
  */
 export async function resolveNpm(catalog, fetcher = fetch, concurrency = 8, pause = ms => new Promise(resolve => setTimeout(resolve, ms))) {
   const names = [...new Set((catalog.plugins ?? []).map(plugin => plugin.npm).filter(name => typeof name === 'string' && NAME.test(name) && name.length <= 214))]
+  const snapshots = new Map()
+  for (const plugin of [...(catalog.plugins ?? [])].sort((a, b) => (b.downloads ?? 0) - (a.downloads ?? 0) || (b.stars ?? 0) - (a.stars ?? 0))) {
+    if (!snapshots.has(plugin.npm) && typeof plugin.version === 'string' && SEMVER.test(plugin.version)) snapshots.set(plugin.npm, plugin.version)
+  }
   const latest = {}
   const outcomes = {}
   const count = key => { outcomes[key] = (outcomes[key] ?? 0) + 1 }
@@ -275,7 +279,7 @@ export async function resolveNpm(catalog, fetcher = fetch, concurrency = 8, paus
       try {
         const response = await fetcher(`https://registry.npmjs.org/${name.replace('/', '%2F')}/latest`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(20_000) })
         if (response.status === 429 || response.status >= 500) {
-          if (attempt === 4) { count(`http ${String(response.status)}`); return }
+          if (attempt === 4) { count(`http ${String(response.status)}`); break }
           await pause(attempt * 3_000)
           continue
         }
@@ -287,10 +291,22 @@ export async function resolveNpm(catalog, fetcher = fetch, concurrency = 8, paus
         count('ok')
         return
       } catch {
-        if (attempt === 4) { count('network'); return }
+        if (attempt === 4) { count('network'); break }
         await pause(attempt * 3_000)
       }
     }
+    // Keep metadata tied to a published version; never borrow an icon from a repository HEAD.
+    const version = snapshots.get(name)
+    if (version === undefined) return
+    try {
+      const response = await fetcher(`https://cdn.jsdelivr.net/npm/${name}@${version}/package.json`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(20_000) })
+      if (!response.ok) { count(`snapshot http ${String(response.status)}`); return }
+      const manifest = await response.json()
+      if (manifest?.name !== name || manifest.version !== version || manifest.deprecated) { count('snapshot unusable'); return }
+      const range = manifest.engines?.dsh
+      latest[name] = { version, ...(typeof range === 'string' && range.trim() !== '' ? { engines: range } : {}), ...(typeof manifest.icon === 'string' ? { icon: manifest.icon } : {}) }
+      count('snapshot ok')
+    } catch { count('snapshot network') }
   }
   const worker = async () => { while (next < names.length) await lookup(names[next++]) }
   await Promise.all(Array.from({ length: concurrency }, worker))
@@ -362,11 +378,12 @@ async function main(argv) {
   const npmLatest = await resolveNpm(catalog)
   const yearly = await resolveYearlyDownloads(catalog)
   const { index, report } = buildIndex(catalog, resolved, undefined, npmLatest, yearly)
+  Object.assign(report, { npmLookups: npmLatest.outcomes, yearlyLookups: yearly.outcomes })
   if (index.plugins.length < 1000) throw new Error(`refusing to write an index with only ${String(index.plugins.length)} plugins`)
   await writeFile(out, `${JSON.stringify(index)}\n`, 'utf8')
   const reportPath = option('--report')
   if (reportPath !== null) await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8')
-  console.log(JSON.stringify({ ...report, npmLookups: npmLatest.outcomes, yearlyLookups: yearly.outcomes }))
+  console.log(JSON.stringify(report))
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main(process.argv.slice(2))
