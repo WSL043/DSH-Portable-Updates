@@ -4,6 +4,8 @@ Machine-readable update assets for [DSH-Portable](https://github.com/WSL043/DSH-
 
 This repository is an infrastructure channel. Download the application from the [DSH-Portable Releases page](https://github.com/WSL043/DSH-Portable/releases/latest).
 
+The separate daily Market index reads plugin icons from published package metadata. If npm latest lookup remains rate-limited or unavailable after retries, it may recover metadata from the catalog's exact published version on jsDelivr. Package name and version must match; a removed or deprecated registry entry is not bypassed. Both registry failures and snapshot recovery counts are retained in `market-index-report.json`. This repairs catalog metadata without republishing or reinstalling a plugin.
+
 The legacy stable and candidate channels mirror one qualified core catalog, with channel-specific download URLs. Its supported window contains up to five of the newest official versions, preserving at least two non-alpha versions when available. Only compatible, qualified versions inside that window are offered; waiting or blocked versions can leave fewer than five choices. Current clients use that catalog for compatible version selection; older clients continue to use the latest-version manifest.
 
 After a run attempts a version, the workflow can dispatch up to two additional queue-drain runs automatically, for at most three runs in the default bounded queue. This fills a new shell's version history without waiting an hour per version. The queue stops when there is no eligible work or its budget is exhausted; scheduled discovery resumes later. Failed versions retain their cooldown and do not block other candidates. Explicit rebuild and accepted-only runs do not drain the queue.

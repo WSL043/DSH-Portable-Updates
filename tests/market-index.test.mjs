@@ -223,3 +223,32 @@ test('the default order is by downloads, with no plugin pinned to the front', ()
   const { index } = buildIndex(catalog(list), {}, 1)
   assert.deepEqual(index.plugins.map(plugin => plugin.name), ['busy', 'dsh-codex-subscription', 'quiet'])
 })
+
+test('registry throttling falls back to the exact published catalog package, without borrowing mismatched metadata', async () => {
+  const plugin = { ...base, name: 'p', npm: 'p', version: '1.0.0' }
+  const snapshotUrl = 'https://cdn.jsdelivr.net/npm/p@1.0.0/package.json'
+  for (const failure of ['rate-limit', 'server', 'network']) {
+    const calls = []
+    const fetcher = async url => {
+      calls.push(url)
+      if (url === snapshotUrl) return { ok: true, json: async () => ({ name: 'p', version: '1.0.0', icon: './icon.png', engines: { dsh: '^0.2.0' } }) }
+      if (failure === 'network') throw new Error('offline')
+      return { ok: false, status: failure === 'rate-limit' ? 429 : 503 }
+    }
+    const metadata = await resolveNpm(catalog([plugin]), fetcher, 1, async () => {})
+    assert.equal(calls.length, 5)
+    assert.equal(calls.at(-1), snapshotUrl)
+    assert.deepEqual(metadata.p, { version: '1.0.0', engines: '^0.2.0', icon: './icon.png' })
+    assert.equal(metadata.outcomes['snapshot ok'], 1)
+    assert.equal(buildIndex(catalog([plugin]), {}, 1, metadata).index.plugins[0].icon, 'https://cdn.jsdelivr.net/npm/p@1.0.0/icon.png')
+  }
+  for (const manifest of [{ name: 'other', version: '1.0.0' }, { name: 'p', version: '2.0.0' }, { name: 'p', version: '1.0.0', deprecated: 'removed' }]) {
+    const result = await resolveNpm(catalog([plugin]), async url => url === snapshotUrl ? { ok: true, json: async () => manifest } : { ok: false, status: 429 }, 1, async () => {})
+    assert.equal(result.p, undefined)
+    assert.equal(result.outcomes['snapshot unusable'], 1)
+  }
+  const calls = []
+  const absent = await resolveNpm(catalog([plugin]), async url => { calls.push(url); return { ok: false, status: 404 } }, 1, async () => {})
+  assert.equal(absent.p, undefined)
+  assert.equal(calls.length, 1, 'a registry removal must not be bypassed with a CDN snapshot')
+})
