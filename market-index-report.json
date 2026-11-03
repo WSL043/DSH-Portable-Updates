@@ -1,0 +1,24 @@
+{
+  "catalogEntries": 8489,
+  "included": 8073,
+  "counts": {
+    "npm": 4389,
+    "tarball": 443,
+    "git": 3241
+  },
+  "skips": {
+    "release tag has no readable package.json": 20,
+    "duplicate package name": 358,
+    "repository has no readable package.json": 20,
+    "no default branch commit": 18
+  },
+  "npmLookups": {
+    "ok": 3857,
+    "unusable": 21,
+    "http 429": 511,
+    "snapshot ok": 511
+  },
+  "yearlyLookups": {
+    "ok": 1099
+  }
+}
