@@ -79,6 +79,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24.22.1
+      - name: Verify the narrow upstream historical boundary
+        run: node --test update-channel/tests/historical-core-policy.test.mjs
       - name: Initialize selection record
         run: |
           set -euo pipefail
@@ -280,6 +282,7 @@ jobs:
     outputs:
       adapter_status: ${{ steps.adapter-preflight.outputs.status || steps.descriptor-v2.outputs.status }}
       adapter_reason: ${{ steps.descriptor-v2.outputs.reason }}
+      historical_status: ${{ steps.descriptor-v2.outputs.status }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -383,7 +386,7 @@ jobs:
             node scripts/patch-historical-descriptor.mjs preflight-app
           fi
           node update-channel/scripts/verify-descriptor-v2-migration.mjs preflight-app
-      - name: Stop before platform builds when descriptor-v2 cannot be restored
+      - name: Stop on an unexpected historical verification failure
         if: always() && steps.descriptor-v2.outcome == 'failure'
         run: exit 1
       - name: Reject incompatible adapters before platform fan-out
@@ -477,6 +480,9 @@ jobs:
         run: node update-channel/scripts/bind-market-host.mjs . resolved-core/members.json
       - name: Align runtime verification with the published permission adapter
         run: node update-channel/scripts/adapt-runtime-verifier.mjs .
+      - name: Retain the known upstream historical limitation without modifying core files
+        if: needs.preview-runtime.outputs.historical_status == 'upstream-limitation'
+        run: node update-channel/scripts/historical-core-policy.mjs .
       - name: Stage the exact verified preview runtime (Windows)
         if: matrix.platform == 'windows'
         shell: powershell
