@@ -3,7 +3,7 @@
 //
 // Input is the Awesome DSH catalog (https://awesome-dsh-plugin.com/plugins.json). Output is one "format 1" index file:
 //   - npm entries            -> { type: 'npm' }
-//   - GitHub release tarball -> { type: 'tarball', url }   (a third source type Portable adds to the official market)
+//   - GitHub release tarball -> omitted: the public index must also work in unmodified official DSH
 //   - GitHub-only entries    -> { type: 'git', url, commit } with the commit resolved from the default branch HEAD
 // A GitHub-sourced entry takes its package name, version and `engines.dsh` from the package.json at that exact commit
 // (or release tag); an entry whose package.json cannot be read or is not valid is skipped and counted, never guessed.
@@ -106,7 +106,7 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
   const skip = reason => { skips[reason] = (skips[reason] ?? 0) + 1 }
   const seen = new Set()
   const plugins = []
-  const counts = { npm: 0, tarball: 0, git: 0 }
+  const counts = { npm: 0, git: 0 }
 
   // The most downloaded entry keeps a package name that the catalog lists more than once.
   const ordered = [...(catalog.plugins ?? [])].sort((left, right) => (right.downloads ?? 0) - (left.downloads ?? 0) || (right.stars ?? 0) - (left.stars ?? 0))
@@ -130,11 +130,7 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
       const info = resolved[targetKey(target)]
       if (info === undefined) { skip('GitHub lookup unavailable'); continue }
       if (target.tarball !== null && target.ref !== null) {
-        const manifest = info.tag?.manifest
-        if (manifest === undefined || manifest === null) { skip('release tag has no readable package.json'); continue }
-        name = manifest.name; version = manifest.version; engines = manifest.engines
-        source = { type: 'tarball', url: target.tarball }; kind = 'tarball'
-        icon = manifestIcon(manifest.icon, target, info.tag?.oid)
+        skip('release tarball is not supported by the official index'); continue
       } else {
         if (typeof info.head !== 'string' || !/^[0-9a-f]{40}$/u.test(info.head)) { skip('no default branch commit'); continue }
         const manifest = info.headManifest

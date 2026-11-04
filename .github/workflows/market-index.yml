@@ -32,21 +32,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/build-market-index.mjs awesome-index.json --report market-index-report.json
-      - name: Validate with the official parser, including the Portable tarball source
+      - name: Validate with unmodified official RC and alpha parsers
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/WSL043/DSH-Portable.git "$RUNNER_TEMP/portable"
           mkdir -p "$RUNNER_TEMP/validate" && cd "$RUNNER_TEMP/validate"
           npm init -y >/dev/null
-          npm i --ignore-scripts --no-audit --no-fund @deepseek-ai/dsh-plugin-market-index@next @deepseek-ai/dsh-client-ui-plugin-market@next semver >/dev/null
-          node "$RUNNER_TEMP/portable/scripts/patch-official-market-tarball.mjs" "$PWD"
+          npm i --ignore-scripts --no-audit --no-fund dsh-market-index-rc5@npm:@deepseek-ai/dsh-plugin-market-index@0.2.1-rc.5 dsh-market-index-alpha3@npm:@deepseek-ai/dsh-plugin-market-index@0.2.2-alpha.3 >/dev/null
           cat > validate.mjs <<'NODE'
           import { readFileSync } from 'node:fs'
-          import { parseMarketIndex } from '@deepseek-ai/dsh-plugin-market-index'
           const index = JSON.parse(readFileSync(process.argv[2], 'utf8'))
-          const parsed = parseMarketIndex(index, 'https://raw.githubusercontent.com/WSL043/DSH-Portable-Updates/market-index/awesome-index.json')
-          if (parsed.plugins.length !== index.plugins.length) throw new Error('the official parser dropped entries')
-          console.log(`official parser accepts ${parsed.plugins.length} plugins`)
+          for (const name of ['dsh-market-index-rc5', 'dsh-market-index-alpha3']) {
+            const { parseMarketIndex } = await import(name)
+            const parsed = parseMarketIndex(index, 'https://raw.githubusercontent.com/WSL043/DSH-Portable-Updates/market-index/awesome-index.json')
+            if (parsed.plugins.length !== index.plugins.length) throw new Error('the official parser dropped entries')
+            console.log(`${name} accepts ${parsed.plugins.length} plugins`)
+          }
           NODE
           node validate.mjs "$GITHUB_WORKSPACE/awesome-index.json"
       - name: Refuse a shrunken catalog

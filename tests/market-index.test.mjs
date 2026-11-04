@@ -7,7 +7,7 @@ const SHA = 'a'.repeat(40)
 const catalog = (plugins) => ({ updated: '2026-10-16', categories: { tools: { en: 'Tools', zh: '工具' } }, plugins })
 const base = { owner: 'someone', category: 'tools', description: { en: 'Does a thing', zh: '做一件事' }, stars: 3, downloads: 10, added: '2026-09-01', page: 'https://awesome-dsh-plugin.com/p/someone/x/' }
 
-test('npm, release-tarball, git and sub-directory entries become the four source shapes', () => {
+test('public indexes keep npm and pinned git sources and omit Portable-only release tarballs', () => {
   const plugins = [
     { ...base, name: 'npm-plugin', npm: '@scope/npm-plugin', version: '1.2.3', url: 'https://github.com/someone/npm-plugin' },
     { ...base, name: 'tar-plugin', npm: null, url: 'https://github.com/someone/tar-plugin', tarball: 'https://github.com/someone/tar-plugin/releases/download/v0.2.3/someone-tar-plugin-0.2.3.tgz' },
@@ -21,11 +21,11 @@ test('npm, release-tarball, git and sub-directory entries become the four source
   }
   const { index, report } = buildIndex(catalog(plugins), resolved, 1)
   assert.equal(index.format, 1)
-  assert.deepEqual(report.counts, { npm: 1, tarball: 1, git: 2 })
+  assert.deepEqual(report.counts, { npm: 1, git: 2 })
   const byName = Object.fromEntries(index.plugins.map(plugin => [plugin.name, plugin.versions[0]]))
   assert.deepEqual(byName['@scope/npm-plugin'].source, { type: 'npm' })
-  assert.deepEqual(byName['@someone/tar-plugin'].source, { type: 'tarball', url: plugins[1].tarball })
-  assert.deepEqual(byName['@someone/tar-plugin'].engines, { dsh: '^0.2.0' })
+  assert.equal(byName['@someone/tar-plugin'], undefined)
+  assert.equal(report.skips['release tarball is not supported by the official index'], 1)
   assert.deepEqual(byName['git-plugin'].source, { type: 'git', url: 'https://github.com/someone/git-plugin', commit: SHA })
   assert.deepEqual(byName['mono-plugin'].source, { type: 'git', url: 'https://github.com/someone/mono', commit: SHA, path: 'packages/mono-plugin' })
   assert.equal(byName['git-plugin'].publishTimestamp, Math.floor(Date.parse('2026-09-01') / 1000))
@@ -57,7 +57,7 @@ test('what cannot be represented or resolved is skipped and counted, never guess
     'GitHub lookup unavailable': 1,
     'repository has no readable package.json': 1,
     'no default branch commit': 1,
-    'release tag has no readable package.json': 1,
+    'release tarball is not supported by the official index': 1,
   })
 })
 
