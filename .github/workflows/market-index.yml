@@ -1,9 +1,9 @@
 name: Market index
 
 # Regenerates the plugin index that DSH-Portable pre-installs into the official experimental plugin market, and
-# publishes it as the only file of the force-pushed `market-index` branch. A raw.githubusercontent.com URL answers
-# without a redirect, which the official market requires of an index, and a single-commit branch keeps the repository
-# from growing by several megabytes a day. The previous index stays in place unless every check below passes.
+# publishes it on the force-pushed `market-index` branch, served to clients through the jsDelivr CDN without redirects.
+# A single-commit branch keeps the repository from growing by several megabytes a day. The previous index stays in
+# place unless every pre-publication check below passes. CDN readback then verifies the exact validated bytes.
 
 on:
   schedule:
@@ -40,12 +40,27 @@ jobs:
           npm i --ignore-scripts --no-audit --no-fund dsh-market-index-rc5@npm:@deepseek-ai/dsh-plugin-market-index@0.2.1-rc.5 dsh-market-index-alpha3@npm:@deepseek-ai/dsh-plugin-market-index@0.2.2-alpha.3 >/dev/null
           cat > validate.mjs <<'NODE'
           import { readFileSync } from 'node:fs'
-          const index = JSON.parse(readFileSync(process.argv[2], 'utf8'))
+          const bytes = readFileSync(process.argv[2])
+          const index = JSON.parse(bytes)
+          const url = 'https://cdn.jsdelivr.net/gh/WSL043/DSH-Portable-Updates@market-index/awesome-index.json'
           for (const name of ['dsh-market-index-rc5', 'dsh-market-index-alpha3']) {
             const { parseMarketIndex } = await import(name)
-            const parsed = parseMarketIndex(index, 'https://raw.githubusercontent.com/WSL043/DSH-Portable-Updates/market-index/awesome-index.json')
+            const parsed = parseMarketIndex(index, url)
             if (parsed.plugins.length !== index.plugins.length) throw new Error('the official parser dropped entries')
             console.log(`${name} accepts ${parsed.plugins.length} plugins`)
+          }
+          if (process.argv.includes('--cdn')) {
+            const purge = await fetch(url.replace('cdn.jsdelivr.net', 'purge.jsdelivr.net'), { signal: AbortSignal.timeout(15000) })
+            if (!purge.ok) throw new Error(`CDN purge returned HTTP ${purge.status}`)
+            await purge.json()
+            for (let attempt = 0; ; attempt++) {
+              const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(15000) })
+              if (response.ok && Buffer.from(await response.arrayBuffer()).equals(bytes)) break
+              if (!response.ok) await response.body?.cancel()
+              if (attempt === 5) throw new Error('CDN does not serve the validated index')
+              await new Promise(resolve => setTimeout(resolve, 5000))
+            }
+            console.log('CDN serves the exact index accepted by both official parsers')
           }
           NODE
           node validate.mjs "$GITHUB_WORKSPACE/awesome-index.json"
@@ -75,3 +90,5 @@ jobs:
           git add .
           git commit -q -m "Awesome DSH index $(date -u +%F)"
           git push -q --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" market-index
+      - name: Refresh and verify the public CDN index
+        run: node "$RUNNER_TEMP/validate/validate.mjs" "$GITHUB_WORKSPACE/awesome-index.json" --cdn
