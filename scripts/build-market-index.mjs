@@ -95,6 +95,10 @@ export function readManifest(text) {
   }
 }
 
+function orderedPlugins(catalog) {
+  return [...(catalog.plugins ?? [])].sort((left, right) => (right.downloads ?? 0) - (left.downloads ?? 0) || (right.stars ?? 0) - (left.stars ?? 0))
+}
+
 /**
  * Pure builder. `resolved` maps `owner/repo` to what GitHub said: { head, headManifest, tag: { oid, manifest } } (any may be absent).
  */
@@ -112,8 +116,7 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
   const counts = { npm: 0, git: 0 }
 
   // The most downloaded entry keeps a package name that the catalog lists more than once.
-  const ordered = [...(catalog.plugins ?? [])].sort((left, right) => (right.downloads ?? 0) - (left.downloads ?? 0) || (right.stars ?? 0) - (left.stars ?? 0))
-  for (const plugin of ordered) {
+  for (const plugin of orderedPlugins(catalog)) {
     let name
     let version
     let engines
@@ -269,9 +272,10 @@ export function npmIcon(icon, name, version) {
  * from jsDelivr; this does not claim to discover a newer version. Count both paths so degraded runs stay visible.
  */
 export async function resolveNpm(catalog, fetcher = fetch, concurrency = 8, pause = wait, budget) {
-  const names = [...new Set((catalog.plugins ?? []).map(plugin => plugin.npm).filter(name => typeof name === 'string' && NAME.test(name) && name.length <= 214))]
+  const ordered = orderedPlugins(catalog)
+  const names = [...new Set(ordered.map(plugin => plugin.npm).filter(name => typeof name === 'string' && NAME.test(name) && name.length <= 214))]
   const snapshots = new Map()
-  for (const plugin of [...(catalog.plugins ?? [])].sort((a, b) => (b.downloads ?? 0) - (a.downloads ?? 0) || (b.stars ?? 0) - (a.stars ?? 0))) {
+  for (const plugin of ordered) {
     if (!snapshots.has(plugin.npm) && typeof plugin.version === 'string' && SEMVER.test(plugin.version)) snapshots.set(plugin.npm, plugin.version)
   }
   const latest = {}
@@ -282,7 +286,8 @@ export async function resolveNpm(catalog, fetcher = fetch, concurrency = 8, paus
       try {
         const response = await fetcher(`https://registry.npmjs.org/${name.replace('/', '%2F')}/latest`, { headers: { accept: 'application/json' }, signal: requestSignal(20_000, budget) })
         if (response.status === 429 || response.status >= 500) {
-          if (attempt === 4) { count(`http ${String(response.status)}`); break }
+          const limit = response.status === 429 ? 2 : 4
+          if (attempt >= limit) { count(`http ${String(response.status)}`); break }
           await pause(attempt * 3_000, undefined, { signal: budget })
           continue
         }
