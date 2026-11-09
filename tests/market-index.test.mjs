@@ -183,7 +183,7 @@ test('a rate-limited npm lookup is retried and the outcomes are counted', async 
   let calls = 0
   const fetcher = async () => {
     calls += 1
-    if (calls <= 2) return { ok: false, status: 429, json: async () => ({}) }
+    if (calls === 1) return { ok: false, status: 429, json: async () => ({}) }
     return { ok: true, status: 200, json: async () => ({ name: 'p', version: '2.0.0' }) }
   }
   const latest = await resolveNpm({ plugins: [{ npm: 'p' }] }, fetcher, 1, async () => {})
@@ -224,6 +224,18 @@ test('the default order is by downloads, with no plugin pinned to the front', ()
   assert.deepEqual(index.plugins.map(plugin => plugin.name), ['busy', 'dsh-codex-subscription', 'quiet'])
 })
 
+test('npm enrichment follows display order when the lookup budget runs out', async () => {
+  const controller = new AbortController()
+  const calls = []
+  const plugins = [{ npm: 'quiet', downloads: 5 }, { npm: 'busy', downloads: 500 }]
+  await resolveNpm(catalog(plugins), async url => {
+    calls.push(url)
+    controller.abort()
+    return { ok: false, status: 404 }
+  }, 1, undefined, controller.signal)
+  assert.deepEqual(calls, ['https://registry.npmjs.org/busy/latest'])
+})
+
 test('registry throttling falls back to the exact published catalog package, without borrowing mismatched metadata', async () => {
   const plugin = { ...base, name: 'p', npm: 'p', version: '1.0.0' }
   const snapshotUrl = 'https://cdn.jsdelivr.net/npm/p@1.0.0/package.json'
@@ -236,7 +248,7 @@ test('registry throttling falls back to the exact published catalog package, wit
       return { ok: false, status: failure === 'rate-limit' ? 429 : 503 }
     }
     const metadata = await resolveNpm(catalog([plugin]), fetcher, 1, async () => {})
-    assert.equal(calls.length, 5)
+    assert.equal(calls.length, failure === 'rate-limit' ? 3 : 5)
     assert.equal(calls.at(-1), snapshotUrl)
     assert.deepEqual(metadata.p, { version: '1.0.0', engines: '^0.2.0', icon: './icon.png' })
     assert.equal(metadata.outcomes['snapshot ok'], 1)
