@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Builds the plugin index that DSH-Portable pre-installs into the official experimental plugin market.
+// Builds the optional community index for the official DSH plugin market.
 //
 // Input is the Awesome DSH catalog (https://awesome-dsh-plugin.com/plugins.json). Output is one "format 1" index file:
 //   - npm entries            -> { type: 'npm' }
@@ -8,10 +8,11 @@
 // A GitHub-sourced entry takes its package name, version and `engines.dsh` from the package.json at that exact commit
 // (or release tag); an entry whose package.json cannot be read or is not valid is skipped and counted, never guessed.
 //
-//   node scripts/build-market-index.mjs <out.json> [--catalog <plugins.json>] [--report <report.json>]
+//   node scripts/build-market-index.mjs <out.json> [--catalog <plugins.json>] [--report <report.json>] [--previous <index.json>]
 // GITHUB_TOKEN (or GH_TOKEN) is required to resolve GitHub entries; without one only npm entries are produced.
 import { readFile, writeFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
+import { setTimeout as wait } from 'node:timers/promises'
 
 const CATALOG_URL = 'https://awesome-dsh-plugin.com/plugins.json'
 const NAME = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/u
@@ -22,6 +23,8 @@ const GITHUB_REPO = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+
 const GITHUB_TREE = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/tree\/[^/]+\/((?:[A-Za-z0-9_.@+-]+\/)*[A-Za-z0-9_.@+-]+)\/?$/u
 const TARBALL = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/releases\/download\/([^/]+)\/[^/]+\.(?:tgz|tar\.gz)$/iu
 const BATCH = 80
+const LOOKUP_BUDGET_MS = 5 * 60_000
+const requestSignal = (ms, budget) => budget ? AbortSignal.any([budget, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms)
 
 function localized(value) {
   if (typeof value === 'string') return value.trim() === '' ? undefined : value.trim()
@@ -95,7 +98,7 @@ export function readManifest(text) {
 /**
  * Pure builder. `resolved` maps `owner/repo` to what GitHub said: { head, headManifest, tag: { oid, manifest } } (any may be absent).
  */
-export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() / 1000), npmLatest = {}, yearly = {}) {
+export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() / 1000), npmLatest = {}, yearly = {}, previous = new Map()) {
   const categories = {}
   for (const [id, title] of Object.entries(catalog.categories ?? {})) {
     const text = localized(title)
@@ -124,21 +127,26 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
       const latest = npmLatest[plugin.npm]
       name = plugin.npm; version = latest?.version ?? plugin.version; engines = latest?.engines; source = { type: 'npm' }; kind = 'npm'
       if (latest !== undefined) icon = npmIcon(latest.icon, name, version)
+      else {
+        const prior = previous.get(name)
+        const priorVersion = prior?.versions?.[0]
+        if (priorVersion?.source?.type === 'npm' && priorVersion.version === version) {
+          icon = npmIcon(prior.icon, name, version)
+          engines = priorVersion.engines?.dsh
+        }
+      }
     } else {
       const target = githubTarget(plugin)
       if (target === null) { skip('not hosted on GitHub and not on npm'); continue }
+      if (target.tarball !== null) { skip('release tarball is not supported by the official index'); continue }
       const info = resolved[targetKey(target)]
       if (info === undefined) { skip('GitHub lookup unavailable'); continue }
-      if (target.tarball !== null && target.ref !== null) {
-        skip('release tarball is not supported by the official index'); continue
-      } else {
-        if (typeof info.head !== 'string' || !/^[0-9a-f]{40}$/u.test(info.head)) { skip('no default branch commit'); continue }
-        const manifest = info.headManifest
-        if (manifest === undefined || manifest === null) { skip('repository has no readable package.json'); continue }
-        name = manifest.name; version = manifest.version; engines = manifest.engines
-        source = { type: 'git', url: `https://github.com/${target.owner}/${target.repo}`, commit: info.head, ...(target.path === null ? {} : { path: target.path }) }; kind = 'git'
-        icon = manifestIcon(manifest.icon, target, info.head)
-      }
+      if (typeof info.head !== 'string' || !/^[0-9a-f]{40}$/u.test(info.head)) { skip('no default branch commit'); continue }
+      const manifest = info.headManifest
+      if (manifest === undefined || manifest === null) { skip('repository has no readable package.json'); continue }
+      name = manifest.name; version = manifest.version; engines = manifest.engines
+      source = { type: 'git', url: `https://github.com/${target.owner}/${target.repo}`, commit: info.head, ...(target.path === null ? {} : { path: target.path }) }; kind = 'git'
+      icon = manifestIcon(manifest.icon, target, info.head)
     }
     if (seen.has(name)) { skip('duplicate package name'); continue }
     seen.add(name)
@@ -156,7 +164,7 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
       metadata: {
         ...(plugin.category && categories[plugin.category] ? { category: plugin.category } : {}),
         keywords: Array.isArray(plugin.capabilities) ? plugin.capabilities.filter(item => typeof item === 'string') : [],
-        sortKeys: { stars: plugin.stars ?? 0, downloads: plugin.downloads ?? 0, yearly: (plugin.npm && yearly[plugin.npm]) || 0 },
+        sortKeys: { stars: plugin.stars ?? 0, downloads: plugin.downloads ?? 0, yearly: kind === 'npm' ? (yearly[name] ?? previous.get(name)?.metadata?.sortKeys?.yearly ?? 0) : 0 },
       },
       versions: [{
         version,
@@ -212,7 +220,7 @@ export async function resolveGithub(catalog, token, fetcher = fetch, pause = ms 
   for (const plugin of catalog.plugins ?? []) {
     if (plugin.npm) continue
     const target = githubTarget(plugin)
-    if (target === null) continue
+    if (target === null || target.tarball !== null) continue
     wanted.set(targetKey(target), target)
   }
   const targets = [...wanted.values()]
@@ -260,7 +268,7 @@ export function npmIcon(icon, name, version) {
  * Read npm latest metadata. If the registry stays unavailable, read the catalog's exact published package.json
  * from jsDelivr; this does not claim to discover a newer version. Count both paths so degraded runs stay visible.
  */
-export async function resolveNpm(catalog, fetcher = fetch, concurrency = 8, pause = ms => new Promise(resolve => setTimeout(resolve, ms))) {
+export async function resolveNpm(catalog, fetcher = fetch, concurrency = 8, pause = wait, budget) {
   const names = [...new Set((catalog.plugins ?? []).map(plugin => plugin.npm).filter(name => typeof name === 'string' && NAME.test(name) && name.length <= 214))]
   const snapshots = new Map()
   for (const plugin of [...(catalog.plugins ?? [])].sort((a, b) => (b.downloads ?? 0) - (a.downloads ?? 0) || (b.stars ?? 0) - (a.stars ?? 0))) {
@@ -269,14 +277,13 @@ export async function resolveNpm(catalog, fetcher = fetch, concurrency = 8, paus
   const latest = {}
   const outcomes = {}
   const count = key => { outcomes[key] = (outcomes[key] ?? 0) + 1 }
-  let next = 0
   const lookup = async name => {
     for (let attempt = 1; attempt <= 4; attempt += 1) {
       try {
-        const response = await fetcher(`https://registry.npmjs.org/${name.replace('/', '%2F')}/latest`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(20_000) })
+        const response = await fetcher(`https://registry.npmjs.org/${name.replace('/', '%2F')}/latest`, { headers: { accept: 'application/json' }, signal: requestSignal(20_000, budget) })
         if (response.status === 429 || response.status >= 500) {
           if (attempt === 4) { count(`http ${String(response.status)}`); break }
-          await pause(attempt * 3_000)
+          await pause(attempt * 3_000, undefined, { signal: budget })
           continue
         }
         if (!response.ok) { count(`http ${String(response.status)}`); return }
@@ -288,14 +295,14 @@ export async function resolveNpm(catalog, fetcher = fetch, concurrency = 8, paus
         return
       } catch {
         if (attempt === 4) { count('network'); break }
-        await pause(attempt * 3_000)
+        await pause(attempt * 3_000, undefined, { signal: budget })
       }
     }
     // Keep metadata tied to a published version; never borrow an icon from a repository HEAD.
     const version = snapshots.get(name)
     if (version === undefined) return
     try {
-      const response = await fetcher(`https://cdn.jsdelivr.net/npm/${name}@${version}/package.json`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(20_000) })
+      const response = await fetcher(`https://cdn.jsdelivr.net/npm/${name}@${version}/package.json`, { headers: { accept: 'application/json' }, signal: requestSignal(20_000, budget) })
       if (!response.ok) { count(`snapshot http ${String(response.status)}`); return }
       const manifest = await response.json()
       if (manifest?.name !== name || manifest.version !== version || manifest.deprecated) { count('snapshot unusable'); return }
@@ -304,8 +311,7 @@ export async function resolveNpm(catalog, fetcher = fetch, concurrency = 8, paus
       count('snapshot ok')
     } catch { count('snapshot network') }
   }
-  const worker = async () => { while (next < names.length) await lookup(names[next++]) }
-  await Promise.all(Array.from({ length: concurrency }, worker))
+  await lookupWorkers(concurrency, names, lookup, budget, outcomes)
   Object.defineProperty(latest, 'outcomes', { value: outcomes, enumerable: false })
   return latest
 }
@@ -315,7 +321,7 @@ export async function resolveNpm(catalog, fetcher = fetch, concurrency = 8, paus
  * unscoped names in bulk (the API takes up to 128 per request, this asks for 100) and scoped names one by one. A name whose
  * count could not be read is simply left out, so it sorts as 0 instead of the whole run failing.
  */
-export async function resolveYearlyDownloads(catalog, fetcher = fetch, now = Date.now(), pause = ms => new Promise(resolve => setTimeout(resolve, ms))) {
+export async function resolveYearlyDownloads(catalog, fetcher = fetch, now = Date.now(), pause = wait, budget) {
   const day = 86_400_000
   const date = value => new Date(value).toISOString().slice(0, 10)
   const today = Date.parse(`${date(now)}T00:00:00Z`)
@@ -332,12 +338,12 @@ export async function resolveYearlyDownloads(catalog, fetcher = fetch, now = Dat
     const path = batch.map(name => name.replace('/', '%2F')).join(',')
     for (let attempt = 1; attempt <= 8; attempt += 1) {
       try {
-        const response = await fetcher(`https://api.npmjs.org/downloads/point/${period}/${path}`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(30_000) })
+        const response = await fetcher(`https://api.npmjs.org/downloads/point/${period}/${path}`, { headers: { accept: 'application/json' }, signal: requestSignal(30_000, budget) })
         if (response.status === 429 || response.status >= 500) {
           if (attempt === 8) { count(`http ${String(response.status)}`); return }
           // npm's statistics API throttles bursts; wait longer each time, as long as the server says to.
           const asked = Number(response.headers?.get?.('retry-after'))
-          await pause(Math.min(60_000, Number.isFinite(asked) && asked > 0 ? asked * 1000 : attempt * 10_000))
+          await pause(Math.min(60_000, Number.isFinite(asked) && asked > 0 ? asked * 1000 : attempt * 10_000), undefined, { signal: budget })
           continue
         }
         if (!response.ok) { count(`http ${String(response.status)}`); return }
@@ -351,29 +357,47 @@ export async function resolveYearlyDownloads(catalog, fetcher = fetch, now = Dat
         return
       } catch {
         if (attempt === 8) { count('network'); return }
-        await pause(Math.min(60_000, attempt * 10_000))
+        await pause(Math.min(60_000, attempt * 10_000), undefined, { signal: budget })
       }
     }
   }
-  let next = 0
-  await Promise.all(Array.from({ length: 3 }, async () => { while (next < jobs.length) await run(jobs[next++]) }))
+  await lookupWorkers(3, jobs, run, budget, outcomes)
   Object.defineProperty(totals, 'outcomes', { value: outcomes, enumerable: false })
   return totals
 }
 
+async function lookupWorkers(concurrency, items, lookup, budget, outcomes) {
+  let next = 0
+  const worker = async () => {
+    while (!budget?.aborted && next < items.length) {
+      try { await lookup(items[next++]) } catch (error) { if (!budget?.aborted) throw error }
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, worker))
+  if (budget?.aborted) outcomes['time budget reached'] = true
+}
+
 async function main(argv) {
   const out = argv[0]
-  if (!out || out.startsWith('--')) throw new Error('usage: build-market-index.mjs <out.json> [--catalog <plugins.json>] [--report <report.json>]')
+  if (!out || out.startsWith('--')) throw new Error('usage: build-market-index.mjs <out.json> [--catalog <plugins.json>] [--report <report.json>] [--previous <index.json>]')
   const option = name => { const at = argv.indexOf(name); return at === -1 ? null : argv[at + 1] }
   const catalogPath = option('--catalog')
   const catalog = catalogPath === null
     ? await (async () => { const response = await fetch(CATALOG_URL, { signal: AbortSignal.timeout(60_000) }); if (!response.ok) throw new Error(`catalog returned HTTP ${String(response.status)}`); return response.json() })()
     : JSON.parse(await readFile(catalogPath, 'utf8'))
   const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN
+  const previousPath = option('--previous')
+  const previous = previousPath ? new Map(JSON.parse(await readFile(previousPath, 'utf8')).plugins.map(plugin => [plugin.name, plugin])) : new Map()
+  console.log('Resolving pinned Git sources')
   const resolved = token ? await resolveGithub(catalog, token) : {}
-  const npmLatest = await resolveNpm(catalog)
-  const yearly = await resolveYearlyDownloads(catalog)
-  const { index, report } = buildIndex(catalog, resolved, undefined, npmLatest, yearly)
+  console.log('Refreshing optional npm metadata and yearly downloads (five-minute budget)')
+  const budget = AbortSignal.timeout(LOOKUP_BUDGET_MS)
+  const [npmLatest, yearly] = await Promise.all([
+    resolveNpm(catalog, fetch, 8, wait, budget),
+    resolveYearlyDownloads(catalog, fetch, Date.now(), wait, budget),
+  ])
+  const { index, report } = buildIndex(catalog, resolved, undefined, npmLatest, yearly, previous)
+  report.catalogUpdated = catalog.updated ?? null
   Object.assign(report, { npmLookups: npmLatest.outcomes, yearlyLookups: yearly.outcomes })
   if (index.plugins.length < 1000) throw new Error(`refusing to write an index with only ${String(index.plugins.length)} plugins`)
   await writeFile(out, `${JSON.stringify(index)}\n`, 'utf8')

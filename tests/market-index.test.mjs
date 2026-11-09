@@ -105,7 +105,7 @@ test('a request that returns no data fails, while a missing repository only drop
   const { index } = buildIndex(catalog(plugins), resolved, 1)
   assert.deepEqual(index.plugins.map(plugin => plugin.name), ['here'])
   await assert.rejects(resolveGithub({ plugins }, 'token', async () => new Response(JSON.stringify({ data: null, errors: [{ message: 'bad credentials' }] }))), /no data/u)
-  await assert.rejects(resolveGithub({ plugins }, 'token', async () => new Response('x', { status: 502 })), /HTTP 502/u)
+  await assert.rejects(resolveGithub({ plugins }, 'token', async () => new Response('x', { status: 502 }), async () => {}), /HTTP 502/u)
 })
 
 test('a plugin shows the icon its own package.json declares, pinned to the commit it was read at; none declared means none listed', () => {
@@ -251,4 +251,38 @@ test('registry throttling falls back to the exact published catalog package, wit
   const absent = await resolveNpm(catalog([plugin]), async url => { calls.push(url); return { ok: false, status: 404 } }, 1, async () => {})
   assert.equal(absent.p, undefined)
   assert.equal(calls.length, 1, 'a registry removal must not be bypassed with a CDN snapshot')
+})
+
+test('aborting optional enrichment stops workers instead of queuing more lookups', async () => {
+  for (const resolve of [
+    (catalog, fetch, budget) => resolveNpm(catalog, fetch, 1, undefined, budget),
+    (catalog, fetch, budget) => resolveYearlyDownloads(catalog, fetch, Date.now(), undefined, budget),
+  ]) {
+    const controller = new AbortController()
+    let calls = 0
+    const fetch = async (_url, options) => {
+      calls += 1
+      controller.abort()
+      assert.equal(options.signal.aborted, true)
+      return { ok: false, status: 429 }
+    }
+    const result = await resolve(catalog([{ npm: '@s/a' }, { npm: '@s/b' }]), fetch, controller.signal)
+    assert.equal(calls, 1)
+    assert.equal(result.outcomes['time budget reached'], true)
+  }
+})
+
+test('missing enrichment preserves published icons only for the same npm version, and retains download statistics', () => {
+  const plugin = { ...base, name: 'p', npm: 'p', version: '1.0.0' }
+  const latest = { p: { version: '1.0.0', icon: './icon.png', engines: '^0.2.0' } }
+  const prior = buildIndex(catalog([plugin]), {}, 1, latest, { p: 100 }).index.plugins[0]
+  const previous = new Map([['p', prior]])
+  const same = buildIndex(catalog([plugin]), {}, 1, {}, {}, previous).index.plugins[0]
+  assert.equal(same.icon, prior.icon)
+  assert.equal(same.versions[0].engines.dsh, '^0.2.0')
+  assert.equal(same.metadata.sortKeys.yearly, 100)
+  const changed = buildIndex(catalog([{ ...plugin, version: '1.1.0' }]), {}, 1, {}, { p: 0 }, previous).index.plugins[0]
+  assert.equal(changed.icon, undefined)
+  assert.equal(changed.versions[0].engines, undefined)
+  assert.equal(changed.metadata.sortKeys.yearly, 0)
 })
