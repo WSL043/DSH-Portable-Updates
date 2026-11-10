@@ -67,6 +67,10 @@ export const CONTRACT_DEFAULT_PLUGIN_BASELINES = Object.freeze({
     sourceSha: 'c95b734f44893dc1a81e98222edf43320b597036',
     manifestSha256: Object.freeze({}),
   }),
+  4: Object.freeze({
+    sourceSha: '52ac4474f6c0d242afd37223a65dd9f5516b643c',
+    manifestSha256: Object.freeze({}),
+  }),
 })
 
 function contractBaseline(contract) {

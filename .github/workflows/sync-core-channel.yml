@@ -663,6 +663,56 @@ jobs:
           if-no-files-found: warn
           compression-level: 0
 
+  sign-prepared:
+    name: Sign the prepared Windows core for local acceptance
+    needs: [resolve, build]
+    if: inputs.prepare_only && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: WSL043/DSH-Portable
+          ref: ${{ needs.resolve.outputs.source_sha }}
+      - uses: actions/checkout@v7
+        with:
+          repository: WSL043/DSH-Portable-Updates
+          ref: ${{ github.sha }}
+          path: update-channel
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.22.1
+      - uses: actions/download-artifact@v8
+        with:
+          name: core-stable-windows-x64
+          path: artifacts
+      - name: Verify the qualified archive and prepare its release manifest
+        env:
+          SELECTED_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          manifest=artifacts/dsh-core-update-windows-x64.json
+          zip=artifacts/DSH-Portable-update-windows-x64.zip
+          node scripts/verify-update-artifact.mjs "$manifest" "$zip" engine
+          [[ "$(jq -er '.component.dshVersion' "$manifest")" == "$SELECTED_VERSION" ]]
+          hash="$(sha256sum "$zip" | cut -d' ' -f1)"
+          base=https://github.com/WSL043/DSH-Portable-Updates/releases/download/update-channel-core-stable
+          mkdir prepared
+          jq --arg url "$base/DSH-Portable-update-windows-x64-$SELECTED_VERSION-${hash:0:12}.zip" \
+            '.component.urls = [$url] | .releaseChannel = "stable"' "$manifest" \
+            > "prepared/dsh-core-update-windows-x64-$SELECTED_VERSION.json"
+      - name: Sign the verified manifest without publishing it
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: node update-channel/scripts/sign-update-metadata.mjs prepared
+      - uses: actions/upload-artifact@v7
+        with:
+          name: prepared-windows-core-metadata
+          path: prepared/
+          if-no-files-found: error
+
   publish:
     permissions:
       actions: read

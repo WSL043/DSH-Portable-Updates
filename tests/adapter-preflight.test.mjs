@@ -107,7 +107,7 @@ test('unverified or malformed contract peer metadata cannot become an exact-bind
     { ...contractPeerManifest, peerDependencies: { '@deepseek-ai/dsh-client-ui-slots': null } },
     { ...contractPeerManifest, peerDependencies: { '@deepseek-ai/dsh-client-ui-slots': 'not a range' } },
   ]) assert.throws(() => check(changed), /metadata|range/)
-  assert.throws(() => checkContractDefaultPluginBinding(4, contractPeerLock, {}, '0.2.1-rc.2', peerSemver), /No reviewed/)
+  assert.throws(() => checkContractDefaultPluginBinding(5, contractPeerLock, {}, '0.2.1-rc.2', peerSemver), /No reviewed/)
   assert.throws(() => checkContractDefaultPluginBinding(2, {}, {}, '0.2.1-rc.2', peerSemver), /membership/)
   assert.throws(() => checkContractDefaultPluginBinding(3, {}, {}, '0.2.1-rc.2', peerSemver), /membership/)
   assert.throws(() => checkContractDefaultPluginBinding(2, { defaultPlugins: { imageViewer: contractPeerLock.defaultPlugins.imageViewer } }, contractPeerManifests, '0.2.1-rc.2', peerSemver), /membership/)
