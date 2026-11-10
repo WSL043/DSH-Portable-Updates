@@ -58,7 +58,7 @@ test('publisher tests this checkout and publishes one five-platform qualificatio
   assert.match(workflow, /concurrency:\r?\n[^\r\n]*\r?\n  cancel-in-progress: false(?:\r?\n|$)/)
   assert.match(workflow, /^  publish:\r?\n[\s\S]*?^    if: .*&& !inputs\.prepare_only &&/m)
   assert.match(workflow, /^  qualification-state:\r?\n[\s\S]*?^    if: .*&& !inputs\.prepare_only &&/m)
-  assert.match(queue, /remaining:[\s\S]*default: 2/)
+  assert.match(queue, /remaining:[\s\S]*default: 4/)
   assert.doesNotMatch(workflow + queue, /shell_channel|inputs\.channel|needs\.stable|needs\.candidate/)
 })
 

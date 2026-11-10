@@ -8,7 +8,9 @@ The separate daily Market index reads plugin icons from published package metada
 
 The legacy stable and candidate channels mirror one qualified core catalog, with channel-specific download URLs. Its supported window contains up to five of the newest official versions, preserving at least two non-alpha versions when available. Only compatible, qualified versions inside that window are offered; waiting or blocked versions can leave fewer than five choices. Current clients use that catalog for compatible version selection; older clients continue to use the latest-version manifest.
 
-After a run attempts a version, the workflow can dispatch up to two additional queue-drain runs automatically, for at most three runs in the default bounded queue. This fills a new shell's version history without waiting an hour per version. The queue stops when there is no eligible work or its budget is exhausted; scheduled discovery resumes later. Failed versions retain their cooldown and do not block other candidates. Explicit rebuild and accepted-only runs do not drain the queue.
+After a run attempts a version, the workflow can dispatch up to four additional runs automatically, enough to cover the five-version window. The queue stops when there is no eligible work or the budget is exhausted. Failed versions retain their cooldown. Explicit rebuild and accepted-only runs do not drain the queue.
+
+Contract 3 starts with Portable 0.9.9 and has no bundled default plugins. The pipeline verifies that frozen boundary before issuing contract-qualified core packages. Shells with the same contract and Node runtime can reuse those packages without a Portable release. Previously exact-bound packages are requalified once before gaining that wider scope.
 
 The build-time permission verifier uses the published patcher's read-only no-change check, including both ends of the newer upstream permission slot. A narrowly checked adapter updates the stale 0.6.9 verifier without changing the published desktop. Unknown verifier shapes fail for review; core artifact acceptance and compatibility fingerprints remain required.
 

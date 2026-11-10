@@ -27,12 +27,12 @@ test('a previously successful core for another shell is not qualification proof 
   assert.equal(selected.version, topThree[0])
 })
 
-test('failed top-three cores retain the 24-hour cooldown and dispatch queue is capped at two fallbacks', async () => {
+test('failed top-three cores retain the 24-hour cooldown and dispatch queue is capped at four fallbacks', async () => {
   const failed = topThree.map(version => ({ sourceSha: 'shell', version, status: 'failed',
     pipelineSha: 'pipe', retryAfter: '2099-01-01T00:00:00Z' }))
   assert.equal(selectCoreRelease(registry, current, false, { sourceSha: 'shell', pipelineSha: 'pipe', state: failed }).version, null)
   const workflow = await (await import('node:fs/promises')).readFile(new URL('../.github/workflows/sync-core.yml', import.meta.url), 'utf8')
-  assert.match(workflow, /remaining:[\s\S]*default: 2/)
-  assert.match(workflow, /\[1-2\]/)
+  assert.match(workflow, /remaining:[\s\S]*default: 4/)
+  assert.match(workflow, /\[1-4\]/)
   assert.doesNotMatch(workflow, /stable:\s+uses:|candidate:\s+uses:/)
 })

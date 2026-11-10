@@ -54,7 +54,7 @@ export async function fetchPinnedDefaultPluginManifests(lock, request = fetch) {
 }
 
 
-/** The first public contract-2 shell; never move this anchor when a feed advances. */
+/** First public shell for each reviewed contract. Feed changes never move these anchors. */
 export const CONTRACT_DEFAULT_PLUGIN_BASELINES = Object.freeze({
   2: Object.freeze({
     sourceSha: '389343b328d80488b9beadc5f81ce5123f23355c',
@@ -62,6 +62,10 @@ export const CONTRACT_DEFAULT_PLUGIN_BASELINES = Object.freeze({
       'dsh-image-viewer': '3e08ab5f3a401868dd563258935284ffcef537c6e1975f25688ed5778da6ec49',
       'dsh-chat-manager': 'c8ff4480f2eedbc04034854d185c0f52b766a8904254d5718b6457f11a248bcc',
     }),
+  }),
+  3: Object.freeze({
+    sourceSha: 'c95b734f44893dc1a81e98222edf43320b597036',
+    manifestSha256: Object.freeze({}),
   }),
 })
 
@@ -162,9 +166,9 @@ export function checkContractDefaultPluginBinding(contract, lock, manifests, dsh
   if (!isValidSemVer(dshVersion) || typeof semver?.satisfies !== 'function' || typeof semver.validRange !== 'function') {
     throw new Error('A valid candidate and pinned semver verifier are required.')
   }
-  const pins = Object.values(lock?.defaultPlugins ?? {})
+  hasEmptyDefaultPlugins(lock)
+  const pins = Object.values(lock.defaultPlugins)
   const names = pins.map(pin => pin?.package)
-  if (!pins.length) throw new Error('Contract baseline has no pinned default plugins.')
   if (pins.length !== Object.keys(baseline.manifestSha256).length || new Set(names).size !== names.length
     || names.some(name => !Object.hasOwn(baseline.manifestSha256, name))) throw new Error('Contract default-plugin membership is invalid.')
   for (const pin of pins) {
@@ -190,12 +194,19 @@ export function hasEmptyDefaultPlugins(productLock) {
   return Object.keys(defaults).length === 0
 }
 
-/** Empty defaults qualify only this published product; optional plugins cannot hold its core intake. */
+export function hasDefaultFreeShellContract(contract) {
+  const baseline = CONTRACT_DEFAULT_PLUGIN_BASELINES[contract]
+  return Boolean(baseline && Object.keys(baseline.manifestSha256).length === 0)
+}
+
+/** An older contract that bundled plugins still requires its exact envelope when the current product omits them. */
 export async function resolveCoreDefaultPluginBinding(contract, productLock, dshVersion, semver, request = fetch) {
   if (!Number.isSafeInteger(contract) || contract < 1 || !isValidSemVer(dshVersion)) {
     throw new Error('A valid shell contract and core version are required.')
   }
-  if (hasEmptyDefaultPlugins(productLock)) return { status: 'success', binding: 'exact',
+  const empty = hasEmptyDefaultPlugins(productLock)
+  if (hasDefaultFreeShellContract(contract) && !empty) throw new Error('Default plugins changed for a default-free shell contract.')
+  if (empty && !hasDefaultFreeShellContract(contract)) return { status: 'success', binding: 'exact',
     baselineSource: '', reason: 'This published Portable baseline has no default plugins; preserve its exact shell envelope.' }
   const { lock, manifests } = await fetchContractDefaultPluginManifests(contract, request)
   return checkContractDefaultPluginBinding(contract, lock, manifests, dshVersion, semver)
