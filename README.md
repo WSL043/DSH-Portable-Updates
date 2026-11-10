@@ -10,7 +10,7 @@ The legacy stable and candidate channels mirror one qualified core catalog, with
 
 After a run attempts a version, the workflow can dispatch up to four additional runs automatically, enough to cover the five-version window. The queue stops when there is no eligible work or the budget is exhausted. Failed versions retain their cooldown. Explicit rebuild and accepted-only runs do not drain the queue.
 
-Contract 3 starts with Portable 0.9.9 and has no bundled default plugins. The pipeline verifies that frozen boundary before issuing contract-qualified core packages. Shells with the same contract and Node runtime can reuse those packages without a Portable release. Previously exact-bound packages are requalified once before gaining that wider scope.
+Contracts 3 (Portable 0.9.9) and 4 (Portable 0.9.11) have no bundled default plugins. Contract 4 keeps the corrected Portable market integration in the capsule when switching cores. The pipeline verifies that frozen boundary before issuing contract-qualified core packages. Shells with the same contract and Node runtime can reuse those packages without a Portable release. Previously exact-bound packages are requalified once before gaining that wider scope. Prepare-only runs also sign the verified Windows manifest for local acceptance and retain it as a workflow artifact.
 
 The build-time permission verifier uses the published patcher's read-only no-change check, including both ends of the newer upstream permission slot. A narrowly checked adapter updates the stale 0.6.9 verifier without changing the published desktop. Unknown verifier shapes fail for review; core artifact acceptance and compatibility fingerprints remain required.
 
