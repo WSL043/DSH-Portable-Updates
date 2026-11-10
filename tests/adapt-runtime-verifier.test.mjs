@@ -16,6 +16,14 @@ test('published verifier uses both surfaces and requires an unchanged localized 
   assert.ok(updated.includes('hasPermissionSettingsLocalization,'))
 })
 
+test('the read-only official verifier is used unchanged', () => {
+  const native = `import { verifyPermissionLocalization } from './patch-permission-localization.mjs'
+verifyPermissionLocalization(readFileSync(permissionSettingsClientPath, 'utf8'), readFileSync(conversationClientPath, 'utf8'))
+`
+  assert.equal(adaptRuntimeVerifier(native), native)
+  assert.throws(() => adaptRuntimeVerifier(native.replace('conversationClientPath', 'otherPath')), /Unrecognized/)
+})
+
 test('unexpected or duplicate verifier seams fail instead of weakening qualification', () => {
   assert.throws(() => adaptRuntimeVerifier(source.replace('conversationClientPath', 'otherPath')), /Unrecognized/)
   assert.throws(() => adaptRuntimeVerifier(source + source), /Unrecognized/)
