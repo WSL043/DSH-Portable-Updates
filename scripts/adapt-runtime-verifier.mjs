@@ -5,6 +5,10 @@ import { pathToFileURL } from 'node:url'
 // Build-time verification only. The published desktop and its compatibility
 // fingerprint remain unchanged; the built core must still pass artifact tests.
 export function adaptRuntimeVerifier(source) {
+  const nativeImport = "import { verifyPermissionLocalization } from './patch-permission-localization.mjs'"
+  const nativeCall = "verifyPermissionLocalization(readFileSync(permissionSettingsClientPath, 'utf8'), readFileSync(conversationClientPath, 'utf8'))"
+  if (source.split(nativeImport).length === 2 && source.split(nativeCall).length === 2) return source
+
   const oldImport = '  hasConversationPermissionLocalization,'
   const newImport = '  patchConversationPermissions,'
   const oldCall = "hasConversationPermissionLocalization(readFileSync(conversationClientPath, 'utf8'))"
