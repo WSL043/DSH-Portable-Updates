@@ -107,8 +107,9 @@ test('unverified or malformed contract peer metadata cannot become an exact-bind
     { ...contractPeerManifest, peerDependencies: { '@deepseek-ai/dsh-client-ui-slots': null } },
     { ...contractPeerManifest, peerDependencies: { '@deepseek-ai/dsh-client-ui-slots': 'not a range' } },
   ]) assert.throws(() => check(changed), /metadata|range/)
-  assert.throws(() => checkContractDefaultPluginBinding(3, contractPeerLock, {}, '0.2.1-rc.2', peerSemver), /No reviewed/)
-  assert.throws(() => checkContractDefaultPluginBinding(2, {}, {}, '0.2.1-rc.2', peerSemver), /no pinned/)
+  assert.throws(() => checkContractDefaultPluginBinding(4, contractPeerLock, {}, '0.2.1-rc.2', peerSemver), /No reviewed/)
+  assert.throws(() => checkContractDefaultPluginBinding(2, {}, {}, '0.2.1-rc.2', peerSemver), /membership/)
+  assert.throws(() => checkContractDefaultPluginBinding(3, {}, {}, '0.2.1-rc.2', peerSemver), /membership/)
   assert.throws(() => checkContractDefaultPluginBinding(2, { defaultPlugins: { imageViewer: contractPeerLock.defaultPlugins.imageViewer } }, contractPeerManifests, '0.2.1-rc.2', peerSemver), /membership/)
 })
 
@@ -183,4 +184,18 @@ test('an explicit empty-default baseline preserves an exact envelope without con
   }
   await assert.rejects(resolveCoreDefaultPluginBinding(2, contractPeerLock, '0.2.1-rc.5', peerSemver, request), /Unexpected plugin request/)
   assert.ok(requests > 0, 'published baselines that still bundle plugins retain their reviewed frozen gate')
+})
+
+test('the first published default-free contract can qualify a newer core without any plugin pins', async () => {
+  const seen = []
+  const request = async url => {
+    seen.push(url)
+    return new Response(JSON.stringify(url.endsWith('shell-contract.json') ? { schemaVersion: 1, contract: 3 } : { defaultPlugins: {} }))
+  }
+  const result = await resolveCoreDefaultPluginBinding(3, { defaultPlugins: {} }, '0.2.2-rc.1', peerSemver, request)
+  assert.equal(result.binding, 'contract')
+  assert.equal(result.baselineSource, 'c95b734f44893dc1a81e98222edf43320b597036')
+  assert.equal(seen.length, 2)
+  assert.ok(seen.every(url => url.includes(result.baselineSource)))
+  await assert.rejects(resolveCoreDefaultPluginBinding(3, contractPeerLock, '0.2.2-rc.1', peerSemver, request), /Default plugins changed/)
 })

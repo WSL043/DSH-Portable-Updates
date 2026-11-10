@@ -13,10 +13,10 @@ on:
   workflow_dispatch:
     inputs:
       remaining:
-        description: Additional bounded fallback runs after this one (0 to 2)
+        description: Additional bounded fallback runs after this one (0 to 4)
         required: false
         type: number
-        default: 2
+        default: 4
       accepted_only:
         description: Requalify the already accepted core for the latest verified Native shell without discovering a new upstream version
         required: false
@@ -55,7 +55,7 @@ jobs:
     if: >-
       always() && !cancelled() && !inputs.accepted_only && !inputs.rebuild &&
       needs.core.outputs.attempted == 'true' &&
-      (github.event_name == 'schedule' || inputs.remaining > 0)
+      (github.event_name != 'workflow_dispatch' || inputs.remaining > 0)
     runs-on: ubuntu-latest
     permissions:
       actions: write
@@ -63,8 +63,8 @@ jobs:
       - name: Continue the bounded qualification queue after recording this result
         env:
           GH_TOKEN: ${{ github.token }}
-          REMAINING: ${{ github.event_name == 'schedule' && 2 || inputs.remaining }}
+          REMAINING: ${{ github.event_name != 'workflow_dispatch' && 4 || inputs.remaining }}
         run: |
           set -euo pipefail
-          [[ "$REMAINING" =~ ^[1-2]$ ]] || { echo 'Invalid queue budget'; exit 1; }
+          [[ "$REMAINING" =~ ^[1-4]$ ]] || { echo 'Invalid queue budget'; exit 1; }
           gh workflow run sync-core.yml --repo "$GITHUB_REPOSITORY" --ref main -f remaining="$((REMAINING - 1))"

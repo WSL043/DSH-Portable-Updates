@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url'
 import { compareVersions, isValidSemVer, sharesCoreRuntimeBaseline } from './build-core-index.mjs'
 import { selectCoreWindow } from './core-window.mjs'
 import { mergeQualificationStates } from './update-qualification-state.mjs'
-import { hasEmptyDefaultPlugins } from './preflight-adapters.mjs'
+import { hasDefaultFreeShellContract, hasEmptyDefaultPlugins } from './preflight-adapters.mjs'
 
 
 function stateRecords(value) {
@@ -22,9 +22,7 @@ function stateRecords(value) {
  */
 export function retainedRecords({ topThree, index, contract, nodeVersion, sourceSha, state, attemptedAt, productLock }) {
   if (!Number.isInteger(contract) || !sourceSha || !Array.isArray(index?.versions) || !productLock) return []
-  // Empty defaults bind publication to the exact product. Contract compatibility
-  // cannot turn an older capsule into a fresh qualification for that baseline.
-  if (hasEmptyDefaultPlugins(productLock)) return []
+  if (hasEmptyDefaultPlugins(productLock) !== hasDefaultFreeShellContract(contract)) return []
   const here = new Set(stateRecords(state).filter(item => item?.sourceSha === sourceSha && item?.status === 'success').map(item => item.version))
   return index.versions
     .filter(entry => topThree.includes(entry?.version) && !here.has(entry.version)
@@ -78,6 +76,7 @@ export function selectCoreRelease(registry, current, acceptedOnly = false, {
   rebuild = false,
   now = Date.now(),
   awaitingSourceTag = [],
+  refreshVersions = [],
 } = {}) {
   const topThree = latestThreeVersions(registry)
   const allowed = new Set(topThree)
@@ -106,13 +105,14 @@ export function selectCoreRelease(registry, current, acceptedOnly = false, {
   }
   candidates.sort((left, right) => compareVersions(right.version, left.version))
   const awaiting = new Set(awaitingSourceTag)
+  const refresh = new Set(refreshVersions)
   const blockedCandidates = []
   for (const candidate of candidates) {
     if (awaiting.has(candidate.version)) continue
     const record = records
       .filter(item => item?.sourceSha === sourceSha && item?.version === candidate.version)
       .sort((left, right) => String(right.attemptedAt ?? '').localeCompare(String(left.attemptedAt ?? '')))[0]
-    if (record?.status === 'success') continue
+    if (record?.status === 'success' && !refresh.has(candidate.version)) continue
     if (cooling(record, now, pipelineSha, peersHash)) {
       if (record.status === 'blocked') blockedCandidates.push({ version: candidate.version, adapter: record.adapter, reason: record.reason })
       continue
@@ -217,7 +217,17 @@ export async function discoverCoreSource({
     .sort((left, right) => compareVersions(right.dsh.version, left.dsh.version))[0]
   const state = mergeQualificationStates(topThree, canonicalState, stableState, candidateState)
   const contract = JSON.parse(await readFile(path.join(portableRoot, 'config/shell-contract.json'), 'utf8').catch(() => 'null'))?.contract
-  let stableIndex = await get(`${releaseBase}update-channel-core-stable/dsh-core-index-windows-x64.json`, true, true).catch(() => null)
+  const catalogUrl = `${releaseBase}update-channel-core-stable/dsh-core-index-windows-x64.json`
+  async function verifiedStableIndex() {
+    const [bytes, signature] = await Promise.all([get(catalogUrl, false), get(`${catalogUrl}.sig`, false)])
+    const { verifyUpdateSignature } = await import(pathToFileURL(path.join(portableRoot, 'launcher/update-signature.mjs')))
+    if (!verifyUpdateSignature(Buffer.from(bytes, 'utf8'), signature)) throw new Error('Published catalog signature is invalid.')
+    const index = JSON.parse(bytes)
+    if (index?.schemaVersion !== 1 || index.channel !== 'stable' || index.platform !== 'windows-x64'
+      || !Array.isArray(index.versions)) throw new Error('Published core catalog is invalid.')
+    return index
+  }
+  let stableIndex = await verifiedStableIndex().catch(() => null)
   let targeted = null
   let tagObject = null
   if (prepareOnly) {
@@ -230,13 +240,7 @@ export async function discoverCoreSource({
   } else if (rebuildVersion) {
     // Maintenance refreshes may replace only an already delivered core. Authenticate the exact catalog bytes
     // with the selected published shell's trust keys; never turn this input into arbitrary npm/source selection.
-    const catalogUrl = `${releaseBase}update-channel-core-stable/dsh-core-index-windows-x64.json`
-    const [catalogBytes, signature] = await Promise.all([get(catalogUrl, false), get(`${catalogUrl}.sig`, false)])
-    const { verifyUpdateSignature } = await import(pathToFileURL(path.join(portableRoot, 'launcher/update-signature.mjs')))
-    let verified = false
-    try { verified = verifyUpdateSignature(Buffer.from(catalogBytes, 'utf8'), signature) } catch {}
-    if (!verified) throw new Error('Published catalog signature is invalid.')
-    const catalog = JSON.parse(catalogBytes)
+    const catalog = stableIndex ?? await verifiedStableIndex()
     stableIndex = catalog
     const entry = catalog?.schemaVersion === 1 && catalog.channel === 'stable' && catalog.platform === 'windows-x64'
       ? catalog.versions?.find(item => item.version === rebuildVersion) : null
@@ -287,6 +291,12 @@ export async function discoverCoreSource({
   // Upstream can publish to npm before it pushes the release tag. Such a version waits for its immutable
   // source; the next unqualified version in the window is tried instead, and the next run retries.
   const awaitingSourceTag = []
+  const refreshVersions = hasDefaultFreeShellContract(contract) && hasEmptyDefaultPlugins(productLock)
+    ? (stableIndex?.versions ?? []).filter(({ manifest }) =>
+      manifest?.updateKind === 'engine' && manifest.portableVersion === product.version
+      && !Object.hasOwn(manifest, 'requiredShellContract')
+      && manifest.component?.requiredNodeVersion === lock.node?.version).map(entry => entry.version)
+    : []
   let selected
   if (targeted) selected = targeted
   else for (;;) {
@@ -298,6 +308,7 @@ export async function discoverCoreSource({
       state,
       rebuild,
       awaitingSourceTag,
+      refreshVersions,
     })
     if (!selected.version || selected.version === lock.dsh.version) break
     const ref = await get(`https://api.github.com/repos/deepseek-ai/deepseek-harness/git/ref/tags/dsh-v${selected.version}`, true, true)

@@ -307,7 +307,7 @@ test('one five-platform qualification publishes channel-specific old-client enve
   const queue = await readFile(new URL('../.github/workflows/sync-core.yml', import.meta.url), 'utf8')
   const workflow = await readFile(new URL('../.github/workflows/sync-core-channel.yml', import.meta.url), 'utf8')
   const preview = await readFile(new URL('../.github/workflows/sync-preview-shell.yml', import.meta.url), 'utf8').catch(() => '')
-  assert.match(queue, /remaining:\s+description: Additional bounded fallback runs after this one \(0 to 2\)[\s\S]*default: 2/)
+  assert.match(queue, /remaining:\s+description: Additional bounded fallback runs after this one \(0 to 4\)[\s\S]*default: 4/)
   assert.match(queue, /rebuild_version:[\s\S]*type: string[\s\S]*default: ''/)
   assert.match(queue, /rebuild_version: \$\{\{ inputs\.rebuild_version \|\| '' \}\}/)
   assert.match(workflow, /REBUILD_VERSION: \$\{\{ inputs\.rebuild_version \|\| '' \}\}/)
@@ -357,6 +357,20 @@ test('empty defaults requeue every old contract-qualified core for the exact new
     progress.push({ sourceSha: 'new-shell', version, status: 'success' })
   }
   assert.equal(selectCoreRelease(registry, current, false, { sourceSha: 'new-shell', state: progress }).version, null)
+})
+
+test('a default-free shell reuses contract-qualified cores and refreshes only selected exact envelopes', async () => {
+  const { retainedRecords } = await import('../scripts/discover-core-source.mjs')
+  const topThree = [...versions].reverse()
+  const version = topThree[0]
+  const manifest = { requiredShellContract: 3, component: { requiredNodeVersion: '24.22.1' } }
+  const args = { topThree, index: { versions: [{ version, manifest }] }, contract: 3, nodeVersion: '24.22.1',
+    sourceSha: 'new-shell', state: [], attemptedAt: 'now', productLock: { defaultPlugins: {} } }
+  assert.equal(retainedRecords(args)[0].version, version)
+  assert.deepEqual(retainedRecords({ ...args, nodeVersion: '25.0.0' }), [])
+  const state = topThree.map(item => ({ sourceSha: 'new-shell', version: item, status: 'success' }))
+  assert.equal(selectCoreRelease(registry, current, false, { sourceSha: 'new-shell', state }).version, null)
+  assert.equal(selectCoreRelease(registry, current, false, { sourceSha: 'new-shell', state, refreshVersions: [version] }).version, version)
 })
 
 test('known blocked candidates remain visible when no build can start', () => {
