@@ -56,16 +56,33 @@ jobs:
           if (parsed.plugins.length !== index.plugins.length) throw new Error('the official parser dropped entries')
           console.log('Official parser accepts ' + parsed.plugins.length + ' plugins')
           if (process.argv.includes('--cdn')) {
+            async function waitForBytes(label, endpoint) {
+              const deadline = Date.now() + 180000
+              let reason
+              while (Date.now() < deadline) {
+                try {
+                  const response = await fetch(endpoint, { redirect: 'error', signal: AbortSignal.timeout(15000) })
+                  if (response.ok) {
+                    if (Buffer.from(await response.arrayBuffer()).equals(bytes)) return
+                    reason = 'previous index bytes'
+                  } else {
+                    reason = `HTTP ${response.status}`
+                    await response.body?.cancel()
+                  }
+                } catch (error) {
+                  reason = error.message
+                }
+                await new Promise(resolve => setTimeout(resolve, 10000))
+              }
+              throw new Error(`${label} does not serve the validated index: ${reason}`)
+            }
+
+            const origin = 'https://raw.githubusercontent.com/WSL043/DSH-Portable-Updates/market-index/awesome-index.json'
+            await waitForBytes('GitHub raw', origin)
             const purge = await fetch(url.replace('cdn.jsdelivr.net', 'purge.jsdelivr.net'), { signal: AbortSignal.timeout(15000) })
             if (!purge.ok) throw new Error(`CDN purge returned HTTP ${purge.status}`)
             await purge.json()
-            for (let attempt = 0; ; attempt++) {
-              const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(15000) })
-              if (response.ok && Buffer.from(await response.arrayBuffer()).equals(bytes)) break
-              if (!response.ok) await response.body?.cancel()
-              if (attempt === 5) throw new Error('CDN does not serve the validated index')
-              await new Promise(resolve => setTimeout(resolve, 5000))
-            }
+            await waitForBytes('CDN', url)
             console.log('CDN serves the exact validated index')
           }
           NODE
@@ -99,4 +116,5 @@ jobs:
           git commit -q -m "Awesome DSH index $(date -u +%F)"
           git push -q --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" market-index
       - name: Refresh and verify the public CDN index
+        timeout-minutes: 7
         run: node "$RUNNER_TEMP/validate/0.2.2-rc.1/validate.mjs" "$GITHUB_WORKSPACE/awesome-index.json" --cdn
