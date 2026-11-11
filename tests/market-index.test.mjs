@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildIndex, buildQuery, displayTitle, githubTarget, manifestIcon, resolveYearlyDownloads, npmIcon, resolveNpm, readManifest, readResolved, resolveGithub, targetKey } from '../scripts/build-market-index.mjs'
+import { buildIndex, buildQuery, displayTitle, githubTarget, manifestIcon, resolveDownloadTotals, npmIcon, resolveNpm, readManifest, readResolved, resolveGithub, targetKey } from '../scripts/build-market-index.mjs'
 
 const SHA = 'a'.repeat(40)
 const catalog = (plugins) => ({ updated: '2026-10-16', categories: { tools: { en: 'Tools', zh: '工具' } }, plugins })
@@ -203,7 +203,7 @@ test('the one-year download count is read in bulk for plain names and singly for
     return { ok: true, status: 200, json: async () => ({ a: { downloads: 10, package: 'a' }, b: null, c: { downloads: 30, package: 'c' } }) }
   }
   const plugins = [{ npm: 'a' }, { npm: 'b' }, { npm: 'c' }, { npm: '@s/p' }, { npm: null }]
-  const totals = await resolveYearlyDownloads(catalog(plugins), fetcher, Date.parse('2026-10-17T12:00:00Z'), async () => {})
+  const totals = await resolveDownloadTotals(catalog(plugins), fetcher, Date.parse('2026-10-17T12:00:00Z'), async () => {})
   assert.deepEqual({ ...totals }, { a: 10, c: 30, '@s/p': 900 })
   assert.equal(seen.length, 2, 'one bulk request and one scoped request')
   assert.ok(seen[0].startsWith('2025-10-18:2026-10-17/'), 'today and the 364 days before it')
@@ -212,6 +212,18 @@ test('the one-year download count is read in bulk for plain names and singly for
   assert.equal(index.plugins.find(p => p.name === 'a').metadata.sortKeys.yearly, 10)
   assert.equal(index.plugins.find(p => p.name === 'z').metadata.sortKeys.yearly, 0)
   assert.equal(index.metadata.sortKeys.yearly.order, 'desc')
+})
+
+test('weekly downloads use the npm week and preserve a previously published count on a lookup miss', async () => {
+  const plugins = [{ ...base, npm: 'a', version: '1.0.0' }, { ...base, npm: 'b', version: '1.0.0' }]
+  const totals = await resolveDownloadTotals(catalog(plugins), async url => {
+    assert.match(url, /\/downloads\/point\/last-week\/a,b$/)
+    return { ok: true, status: 200, json: async () => ({ a: { downloads: 17 }, b: null }) }
+  }, undefined, undefined, undefined, 'week')
+  const previous = new Map([['b', { metadata: { sortKeys: { npm_weekly_downloads: 23 } } }]])
+  const { index } = buildIndex(catalog(plugins), {}, undefined, {}, {}, previous, totals)
+  assert.deepEqual(index.plugins.map(plugin => plugin.metadata.sortKeys.npm_weekly_downloads), [17, 23])
+  assert.equal(index.metadata.sortKeys.npm_weekly_downloads.order, 'desc')
 })
 
 test('the default order is by downloads, with no plugin pinned to the front', () => {
@@ -268,7 +280,7 @@ test('registry throttling falls back to the exact published catalog package, wit
 test('aborting optional enrichment stops workers instead of queuing more lookups', async () => {
   for (const resolve of [
     (catalog, fetch, budget) => resolveNpm(catalog, fetch, 1, undefined, budget),
-    (catalog, fetch, budget) => resolveYearlyDownloads(catalog, fetch, Date.now(), undefined, budget),
+    (catalog, fetch, budget) => resolveDownloadTotals(catalog, fetch, Date.now(), undefined, budget),
   ]) {
     const controller = new AbortController()
     let calls = 0

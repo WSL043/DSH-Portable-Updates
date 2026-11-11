@@ -102,7 +102,7 @@ function orderedPlugins(catalog) {
 /**
  * Pure builder. `resolved` maps `owner/repo` to what GitHub said: { head, headManifest, tag: { oid, manifest } } (any may be absent).
  */
-export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() / 1000), npmLatest = {}, yearly = {}, previous = new Map()) {
+export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() / 1000), npmLatest = {}, yearly = {}, previous = new Map(), weekly = {}) {
   const categories = {}
   for (const [id, title] of Object.entries(catalog.categories ?? {})) {
     const text = localized(title)
@@ -156,6 +156,8 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
     const added = Math.floor(Date.parse(plugin.added) / 1000)
     const description = localized(plugin.description)
     const homepage = typeof plugin.page === 'string' && /^https?:\/\//u.test(plugin.page) ? plugin.page : undefined
+    const previousSortKeys = previous.get(name)?.metadata?.sortKeys
+    const weeklyDownloads = kind === 'npm' ? weekly[name] ?? previousSortKeys?.npm_weekly_downloads : undefined
     plugins.push({
       name,
       title: displayTitle(plugin.name) || name,
@@ -167,7 +169,12 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
       metadata: {
         ...(plugin.category && categories[plugin.category] ? { category: plugin.category } : {}),
         keywords: Array.isArray(plugin.capabilities) ? plugin.capabilities.filter(item => typeof item === 'string') : [],
-        sortKeys: { stars: plugin.stars ?? 0, downloads: plugin.downloads ?? 0, yearly: kind === 'npm' ? (yearly[name] ?? previous.get(name)?.metadata?.sortKeys?.yearly ?? 0) : 0 },
+        sortKeys: {
+          stars: plugin.stars ?? 0,
+          downloads: plugin.downloads ?? 0,
+          yearly: kind === 'npm' ? (yearly[name] ?? previousSortKeys?.yearly ?? 0) : 0,
+          ...(Number.isSafeInteger(weeklyDownloads) && weeklyDownloads >= 0 ? { npm_weekly_downloads: weeklyDownloads } : {}),
+        },
       },
       versions: [{
         version,
@@ -188,6 +195,7 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
         categories,
         sortKeys: {
           stars: { title: { en: 'Stars', zh: '星标' }, order: 'desc' },
+          npm_weekly_downloads: { title: { en: 'npm weekly downloads', zh: 'npm 周下载量' }, order: 'desc' },
           downloads: { title: { en: 'Downloads (30 days)', zh: '30 天下载量' }, order: 'desc' },
           yearly: { title: { en: 'Downloads (1 year)', zh: '年下载量（近 365 天）' }, order: 'desc' },
         },
@@ -322,15 +330,15 @@ export async function resolveNpm(catalog, fetcher = fetch, concurrency = 8, paus
 }
 
 /**
- * Downloads over the last 365 days (today and the 364 days before it, UTC) for each npm-listed plugin, from npm's own statistics API:
+ * Downloads for each npm-listed plugin from npm's statistics API. The yearly range includes today and the preceding 364 UTC days.
  * unscoped names in bulk (the API takes up to 128 per request, this asks for 100) and scoped names one by one. A name whose
- * count could not be read is simply left out, so it sorts as 0 instead of the whole run failing.
+ * count could not be read is left out so the builder can reuse its previous value.
  */
-export async function resolveYearlyDownloads(catalog, fetcher = fetch, now = Date.now(), pause = wait, budget) {
+export async function resolveDownloadTotals(catalog, fetcher = fetch, now = Date.now(), pause = wait, budget, interval = 'year') {
   const day = 86_400_000
   const date = value => new Date(value).toISOString().slice(0, 10)
   const today = Date.parse(`${date(now)}T00:00:00Z`)
-  const period = `${date(today - 364 * day)}:${date(today)}`
+  const period = interval === 'week' ? 'last-week' : `${date(today - 364 * day)}:${date(today)}`
   const names = [...new Set((catalog.plugins ?? []).map(plugin => plugin.npm).filter(name => typeof name === 'string' && NAME.test(name) && name.length <= 214))]
   const unscoped = names.filter(name => !name.startsWith('@'))
   const batches = []
@@ -395,15 +403,17 @@ async function main(argv) {
   const previous = previousPath ? new Map(JSON.parse(await readFile(previousPath, 'utf8')).plugins.map(plugin => [plugin.name, plugin])) : new Map()
   console.log('Resolving pinned Git sources')
   const resolved = token ? await resolveGithub(catalog, token) : {}
-  console.log('Refreshing optional npm metadata and yearly downloads (five-minute budget)')
+  console.log('Refreshing optional npm metadata and download statistics (five-minute budget)')
   const budget = AbortSignal.timeout(LOOKUP_BUDGET_MS)
-  const [npmLatest, yearly] = await Promise.all([
+  const [npmLatest, yearly, weekly] = await Promise.all([
     resolveNpm(catalog, fetch, 8, wait, budget),
-    resolveYearlyDownloads(catalog, fetch, Date.now(), wait, budget),
+    resolveDownloadTotals(catalog, fetch, Date.now(), wait, budget),
+    resolveDownloadTotals(catalog, fetch, Date.now(), wait, budget, 'week'),
   ])
-  const { index, report } = buildIndex(catalog, resolved, undefined, npmLatest, yearly, previous)
+  const { index, report } = buildIndex(catalog, resolved, undefined, npmLatest, yearly, previous, weekly)
   report.catalogUpdated = catalog.updated ?? null
-  Object.assign(report, { npmLookups: npmLatest.outcomes, yearlyLookups: yearly.outcomes })
+  Object.assign(report, { npmLookups: npmLatest.outcomes, yearlyLookups: yearly.outcomes, weeklyLookups: weekly.outcomes,
+    weeklyEntries: index.plugins.filter(plugin => plugin.metadata.sortKeys.npm_weekly_downloads !== undefined).length })
   if (index.plugins.length < 1000) throw new Error(`refusing to write an index with only ${String(index.plugins.length)} plugins`)
   await writeFile(out, `${JSON.stringify(index)}\n`, 'utf8')
   const reportPath = option('--report')
