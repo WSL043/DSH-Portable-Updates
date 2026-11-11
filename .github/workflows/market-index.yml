@@ -56,8 +56,8 @@ jobs:
           if (parsed.plugins.length !== index.plugins.length) throw new Error('the official parser dropped entries')
           console.log('Official parser accepts ' + parsed.plugins.length + ' plugins')
           if (process.argv.includes('--cdn')) {
-            async function waitForBytes(label, endpoint) {
-              const deadline = Date.now() + 180000
+            async function waitForBytes(label, endpoint, timeout) {
+              const deadline = Date.now() + timeout
               let reason
               while (Date.now() < deadline) {
                 try {
@@ -78,11 +78,11 @@ jobs:
             }
 
             const origin = 'https://raw.githubusercontent.com/WSL043/DSH-Portable-Updates/market-index/awesome-index.json'
-            await waitForBytes('GitHub raw', origin)
+            await waitForBytes('GitHub raw', origin, 330_000)
             const purge = await fetch(url.replace('cdn.jsdelivr.net', 'purge.jsdelivr.net'), { signal: AbortSignal.timeout(15000) })
             if (!purge.ok) throw new Error(`CDN purge returned HTTP ${purge.status}`)
             await purge.json()
-            await waitForBytes('CDN', url)
+            await waitForBytes('CDN', url, 120_000)
             console.log('CDN serves the exact validated index')
           }
           NODE
@@ -116,5 +116,5 @@ jobs:
           git commit -q -m "Awesome DSH index $(date -u +%F)"
           git push -q --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" market-index
       - name: Refresh and verify the public CDN index
-        timeout-minutes: 7
+        timeout-minutes: 9
         run: node "$RUNNER_TEMP/validate/0.2.2-rc.1/validate.mjs" "$GITHUB_WORKSPACE/awesome-index.json" --cdn
