@@ -21,12 +21,23 @@ export function bindMarketHost(manifest, plan) {
   return { ...manifest, peerDependencies }
 }
 
+export function bindReviewedOfficeParser(manifest) {
+  const office = '@deepseek-ai/libreoffice-kit@0.2.3'
+  if (Object.hasOwn(manifest.overrides ?? {}, office)) return manifest
+  // The released shell stages new cores with its original manifest. Carry the
+  // existing ZIP64 fix to the newly reviewed Office package (GHSA-px8p-9vwx-vf98).
+  return { ...manifest, overrides: { ...manifest.overrides, [office]: { fflate: '0.8.3' } } }
+}
+
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
   const [root, planFile] = process.argv.slice(2)
   const filename = path.join(root, 'app/vendor/dsh-portable-plugin-market/package.json')
+  const runtimeFile = path.join(root, 'app/package.json')
   const original = JSON.parse(await readFile(filename, 'utf8'))
   const plan = JSON.parse(await readFile(planFile, 'utf8'))
+  const runtime = bindReviewedOfficeParser(JSON.parse(await readFile(runtimeFile, 'utf8')))
   const next = bindMarketHost(original, plan)
+  await writeFile(runtimeFile, JSON.stringify(runtime, null, 2) + '\n')
   await writeFile(filename, JSON.stringify(next, null, 2) + '\n')
   const evidence = { sourceCommit: plan.sourceCommit, package: next.name,
     peer: '@deepseek-ai/dsh-settings', before: original.peerDependencies['@deepseek-ai/dsh-settings'],

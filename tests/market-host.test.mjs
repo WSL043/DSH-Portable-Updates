@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { bindMarketHost } from '../scripts/bind-market-host.mjs'
+import { bindMarketHost, bindReviewedOfficeParser } from '../scripts/bind-market-host.mjs'
 
 test('qualification binds only our market settings peer to the exact official host', () => {
   const original = { name: '@wsl043/dsh-portable-plugin-market',
@@ -26,4 +26,16 @@ test('a prerelease official cordis is bound exactly; a stable one keeps the ship
   const stable = bindMarketHost(original, { members: { dsh: settings, vendor: [{ name: '@deepseek-ai/cordis', version: '4.0.4' }] } })
   assert.equal(stable.peerDependencies['@deepseek-ai/cordis'], '^4.0.1')
   assert.equal(original.peerDependencies['@deepseek-ai/cordis'], '^4.0.1')
+})
+
+test('qualification carries the patched ZIP parser to the new exact Office dependency', () => {
+  const oldOffice = '@deepseek-ai/libreoffice-kit@0.1.5'
+  const newOffice = '@deepseek-ai/libreoffice-kit@0.2.3'
+  const baseline = { overrides: { [oldOffice]: { fflate: '0.8.3' }, undici: '7.30.1' } }
+  const bound = bindReviewedOfficeParser(baseline)
+  assert.deepEqual(bound.overrides, { ...baseline.overrides, [newOffice]: { fflate: '0.8.3' } })
+  assert.equal(baseline.overrides[newOffice], undefined)
+  assert.deepEqual(bindReviewedOfficeParser(bound), bound)
+  const updated = { overrides: { [newOffice]: { fflate: '0.8.4' } } }
+  assert.equal(bindReviewedOfficeParser(updated), updated)
 })
