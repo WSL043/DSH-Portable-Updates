@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - .github/workflows/sync-core*.yml
+      - scripts/apply-released-client-adapters.mjs
+      - scripts/preflight-adapters.mjs
       - scripts/historical-core-policy.mjs
       - scripts/verify-descriptor-v2-migration.mjs
       - scripts/discover-core-source.mjs

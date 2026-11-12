@@ -3,9 +3,10 @@ import { readFile } from 'node:fs/promises'
 
 const releasedShell = 'b9939941f7f064d86a47e3989b5716cc558834c7'
 const officialCore = 'ddac96760b6edf8fa0fe17cbdcf0b512f4c12b2c'
-const reviewedAdapters = '2b2b427dd7a98087641183da55c59dcfb9ee8a7b'
+const reviewedAdapters = '871cc3aba850b74134a276d782709071a9ac58fe'
 const files = [
   'desktop-bridge/lib/client.js',
+  'scripts/patch-account-login.mjs',
   'scripts/patch-loopback-connection.mjs',
   'scripts/patch-native-boot-handoff.mjs',
   'scripts/patch-native-settings-command.mjs',
