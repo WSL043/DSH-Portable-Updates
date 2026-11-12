@@ -117,6 +117,7 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
 
   // The most downloaded entry keeps a package name that the catalog lists more than once.
   for (const plugin of orderedPlugins(catalog)) {
+    const target = githubTarget(plugin)
     let name
     let version
     let engines
@@ -139,7 +140,6 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
         }
       }
     } else {
-      const target = githubTarget(plugin)
       if (target === null) { skip('not hosted on GitHub and not on npm'); continue }
       if (target.tarball !== null) { skip('release tarball is not supported by the official index'); continue }
       const info = resolved[targetKey(target)]
@@ -155,7 +155,7 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
     seen.add(name)
     const added = Math.floor(Date.parse(plugin.added) / 1000)
     const description = localized(plugin.description)
-    const homepage = typeof plugin.page === 'string' && /^https?:\/\//u.test(plugin.page) ? plugin.page : undefined
+    const repository = target && { url: `https://github.com/${target.owner}/${target.repo}`, ...(target.path === null ? {} : { directory: target.path }) }
     const previousSortKeys = previous.get(name)?.metadata?.sortKeys
     const weeklyDownloads = kind === 'npm' ? weekly[name] ?? previousSortKeys?.npm_weekly_downloads : undefined
     plugins.push({
@@ -164,8 +164,7 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
       ...(description === undefined ? {} : { description }),
       ...(icon === undefined ? {} : { icon }),
       ...(plugin.owner ? { author: String(plugin.owner) } : {}),
-      ...(homepage === undefined ? {} : { homepage }),
-      ...(/^https:\/\/github\.com\/[^/?#]+\/[^/?#]+$/u.test(plugin.url ?? '') ? { repository: { url: plugin.url } } : {}),
+      ...(repository === null ? {} : { repository }),
       metadata: {
         ...(plugin.category && categories[plugin.category] ? { category: plugin.category } : {}),
         keywords: Array.isArray(plugin.capabilities) ? plugin.capabilities.filter(item => typeof item === 'string') : [],

@@ -31,6 +31,11 @@ test('public indexes keep npm and pinned git sources and omit Portable-only rele
   assert.equal(byName['git-plugin'].publishTimestamp, Math.floor(Date.parse('2026-09-01') / 1000))
   assert.deepEqual(index.metadata.categories.tools.title, { en: 'Tools', zh: '工具' })
   assert.deepEqual(index.plugins[0].metadata.sortKeys, { stars: 3, downloads: 10, yearly: 0 })
+  assert.ok(index.plugins.every(plugin => plugin.homepage === undefined))
+  assert.deepEqual(index.plugins.find(plugin => plugin.name === '@scope/npm-plugin').repository,
+    { url: 'https://github.com/someone/npm-plugin' })
+  assert.deepEqual(index.plugins.find(plugin => plugin.name === 'mono-plugin').repository,
+    { url: 'https://github.com/someone/mono', directory: 'packages/mono-plugin' })
 })
 
 test('what cannot be represented or resolved is skipped and counted, never guessed', () => {
