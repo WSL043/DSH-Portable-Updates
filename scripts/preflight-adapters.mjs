@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url'
 import { isValidSemVer } from './build-core-index.mjs'
 
 export const ADAPTERS = ['session-export-ui', 'permission-localization', 'theme-bootstrap',
-  'account-login', 'native-boot-handoff', 'native-settings-command', 'loopback-connection', 'historical-descriptor',
+  'account-login', 'native-boot-handoff', 'native-settings-command', 'loopback-connection',
   'portable-hero-context', 'client-module-startup', 'windows-subprocess-hide']
 
 export function checkDefaultPluginCapabilities(lock, workspaceClient) {
