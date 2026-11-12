@@ -374,6 +374,7 @@ jobs:
           if-no-files-found: warn
       - name: Prepare adapter preflight against the published Portable baseline
         run: |
+          node update-channel/scripts/apply-released-client-adapters.mjs resolved-core/lock.json
           node update-channel/scripts/bind-market-host.mjs . resolved-core/members.json
           node scripts/stage-preview-runtime.mjs --packed-root upstream/dist --output preflight-app --lock-file '${{ needs.resolve.outputs.lock_file }}'
       - name: Verify released descriptor-v2 migration against the exact packaged core
@@ -477,7 +478,9 @@ jobs:
           gh release download "$RELEASE_TAG" --repo WSL043/DSH-Portable --pattern "$ARCHIVE" --pattern checksums.txt --dir baseline-artifacts
           node update-channel/scripts/released-baseline.mjs verify baseline-artifacts "$BASELINE_PLATFORM"
       - name: Bind our market to the exact host being qualified
-        run: node update-channel/scripts/bind-market-host.mjs . resolved-core/members.json
+        run: |
+          node update-channel/scripts/apply-released-client-adapters.mjs resolved-core/lock.json
+          node update-channel/scripts/bind-market-host.mjs . resolved-core/members.json
       - name: Align runtime verification with the published permission adapter
         run: node update-channel/scripts/adapt-runtime-verifier.mjs .
       - name: Retain the known upstream historical limitation without modifying core files
