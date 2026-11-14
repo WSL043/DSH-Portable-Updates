@@ -1,0 +1,33 @@
+{
+  "catalogEntries": 10936,
+  "included": 9746,
+  "counts": {
+    "npm": 5638,
+    "git": 4108
+  },
+  "skips": {
+    "release tarball is not supported by the official index": 738,
+    "repository has no readable package.json": 27,
+    "duplicate package name": 399,
+    "no default branch commit": 26
+  },
+  "catalogUpdated": "2026-11-13",
+  "npmLookups": {
+    "ok": 659,
+    "unusable": 2,
+    "http 429": 728,
+    "snapshot ok": 726,
+    "snapshot http 403": 1,
+    "snapshot network": 1,
+    "time budget reached": true
+  },
+  "yearlyLookups": {
+    "ok": 100,
+    "time budget reached": true
+  },
+  "weeklyLookups": {
+    "ok": 117,
+    "time budget reached": true
+  },
+  "weeklyEntries": 4488
+}
