@@ -416,7 +416,7 @@ jobs:
             platform: windows
             arch: x64
             artifact: windows-x64
-          - runner: macos-15
+          - runner: macos-26
             platform: macos
             arch: arm64
             artifact: macos-arm64
