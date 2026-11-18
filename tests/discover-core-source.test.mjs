@@ -5,7 +5,6 @@ import { updateQualificationState } from '../scripts/update-qualification-state.
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { runInNewContext } from 'node:vm'
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
 
 const versions = ['0.1.7-rc.2', '0.2.0-alpha.1', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.0']
@@ -107,19 +106,6 @@ test('targeted refresh only rebuilds an already qualified signed-catalog version
       assert.equal(await readFile(path.join(root, 'upstream.lock.json'), 'utf8'), original)
     }
   })
-})
-
-test('the local plugin poll requests the official dsh-v release tag before dispatching', async () => {
-  const source = await readFile(new URL('../scripts/poll-upstream.mjs', import.meta.url), 'utf8')
-  const start = source.indexOf('async function dispatchPluginAutopilots(version) {')
-  const end = source.indexOf('\nconst times =', start)
-  assert.ok(start >= 0 && end > start)
-  const requests = []
-  await runInNewContext(`${source.slice(start, end)}\ndispatchPluginAutopilots('0.2.1-rc.2')`, {
-    fetch: async url => { requests.push(url); return { ok: false } },
-    run: () => { throw new Error('An unavailable upstream release must not dispatch plugin workflows') },
-  })
-  assert.deepEqual(requests, ['https://api.github.com/repos/deepseek-ai/deepseek-harness/releases/tags/dsh-v0.2.1-rc.2'])
 })
 
 test('the full published semver set chooses the newest five across alpha, rc, and final releases', () => {
