@@ -17,6 +17,32 @@ async function get(url, request) {
   return response
 }
 
+export function retryUnassignedCoreRunner(record, invoke = run) {
+  if (record?.status !== 'failed') return null
+  const api = route => JSON.parse(invoke('gh', ['api', 'repos/' + CORE_REPO + '/' + route]))
+  const { workflow_runs: [latest] } = api('actions/workflows/sync-core.yml/runs?branch=main&per_page=1')
+  const attempted = Date.parse(record.attemptedAt)
+  if (latest?.conclusion !== 'failure' || latest.run_attempt !== 1 || latest.head_sha !== record.pipelineSha
+      || !(attempted >= Date.parse(latest.created_at) && attempted <= Date.parse(latest.updated_at))) return null
+
+  const { jobs } = api('actions/runs/' + latest.id + '/jobs?per_page=100')
+  const builds = jobs.filter(job => job.name.startsWith('core / build ('))
+  const cancelled = builds.find(job => job.conclusion === 'cancelled' && !job.runner_name && job.steps.length === 0)
+  if (builds.length !== 5 || builds.filter(job => job.conclusion === 'success').length !== 4
+      || !cancelled || !jobs.some(job => job.name === 'core / publish' && job.conclusion === 'skipped')) return null
+  const annotations = api('check-runs/' + cancelled.id + '/annotations')
+  if (!annotations.some(entry => entry.annotation_level === 'failure'
+      && entry.message.startsWith('The job was not acquired by Runner of type hosted'))) return null
+
+  const baseline = JSON.parse(invoke('gh', ['api', 'repos/' + DESKTOP_REPO + '/releases/latest']))
+  if (baseline.target_commitish !== record.sourceSha) return null
+  const { assets } = JSON.parse(invoke('gh', ['release', 'view', 'update-channel-core-stable', '-R', CORE_REPO, '--json', 'assets']))
+  if (!assets.length || assets.some(asset => !(Date.parse(asset.updatedAt) <= Date.parse(latest.created_at)))) return null
+
+  invoke('gh', ['run', 'rerun', '-R', CORE_REPO, '--job', String(cancelled.id)])
+  return 'Core ' + record.version + ': scheduled poll retried unassigned runner ' + cancelled.html_url
+}
+
 async function pollCore() {
   const times = JSON.parse(run('npm', ['view', '@deepseek-ai/dsh', 'time', '--json']))
   const newest = Object.entries(times).filter(([v]) => v !== 'created' && v !== 'modified').sort((a, b) => a[1].localeCompare(b[1])).at(-1)?.[0]
@@ -24,7 +50,10 @@ async function pollCore() {
 
   const stateUrl = 'https://github.com/' + CORE_REPO + '/releases/download/update-channel-core/qualification-state.json'
   const state = await (await get(stateUrl, fetch)).json()
-  if (state.some(entry => entry.version === newest)) return 'Core ' + newest + ' already has a qualification record'
+  const newestRecords = state.filter(entry => entry.version === newest)
+  if (newestRecords.some(entry => entry.status === 'success')) return 'Core ' + newest + ' already has a successful qualification'
+  const record = newestRecords.sort((a, b) => String(b.attemptedAt).localeCompare(String(a.attemptedAt)))[0]
+  if (record) return retryUnassignedCoreRunner(record) ?? ('Core ' + newest + ': last qualification is ' + record.status)
 
   const active = JSON.parse(run('gh', ['run', 'list', '-R', CORE_REPO, '--workflow', 'sync-core.yml', '-L', '10', '--json', 'status']))
   if (active.some(r => r.status !== 'completed')) return 'Core ' + newest + ': a sync run is already active'
