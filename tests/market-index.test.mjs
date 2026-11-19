@@ -38,26 +38,6 @@ test('public indexes keep npm and pinned git sources and omit Portable-only rele
     { url: 'https://github.com/someone/mono', directory: 'packages/mono-plugin' })
 })
 
-test('the official list description shows known GitHub stars before the original localized text', () => {
-  const plugins = [
-    { ...base, npm: 'localized-description', version: '1.0.0', stars: 7848 },
-    { ...base, npm: 'plain-description', version: '1.0.0', stars: 12345, description: 'A plain description' },
-    { ...base, npm: 'only-stars', version: '1.0.0', stars: 42, description: undefined },
-    { ...base, npm: 'unknown-stars', version: '1.0.0', stars: undefined },
-    { ...base, npm: 'zero-stars', version: '1.0.0', stars: 0 },
-  ]
-  const { index } = buildIndex(catalog(plugins))
-  const rows = new Map(index.plugins.map(plugin => [plugin.name, plugin]))
-  assert.deepEqual(rows.get('localized-description').description, {
-    en: '★ 7,848 · Does a thing',
-    zh: '★ 7,848 · 做一件事',
-  })
-  assert.equal(rows.get('localized-description').metadata.sortKeys.stars, 7848)
-  assert.equal(rows.get('plain-description').description, '★ 12,345 · A plain description')
-  assert.equal(rows.get('only-stars').description, '★ 42')
-  for (const name of ['unknown-stars', 'zero-stars']) assert.deepEqual(rows.get(name).description, base.description)
-})
-
 test('what cannot be represented or resolved is skipped and counted, never guessed', () => {
   const plugins = [
     { ...base, name: 'bad-name', npm: 'Bad_Name', version: '1.0.0' },

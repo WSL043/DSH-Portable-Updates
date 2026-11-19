@@ -81,16 +81,6 @@ function localized(value) {
   return undefined
 }
 
-export function descriptionWithStars(value, stars) {
-  const description = localized(value)
-  if (!Number.isSafeInteger(stars) || stars <= 0) return description
-
-  const prefix = '★ ' + stars.toLocaleString('en-US')
-  if (description === undefined) return prefix
-  if (typeof description === 'string') return prefix + ' · ' + description
-  return Object.fromEntries(Object.entries(description).map(([locale, text]) => [locale, prefix + ' · ' + text]))
-}
-
 /** The catalog name with the `#suffix` some entries carry for disambiguation removed. */
 export function displayTitle(name) {
   const text = String(name ?? '')
@@ -205,7 +195,7 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
     if (seen.has(name)) { skip('duplicate package name'); continue }
     seen.add(name)
     const added = Math.floor(Date.parse(plugin.added) / 1000)
-    const description = descriptionWithStars(plugin.description, plugin.stars)
+    const description = localized(plugin.description)
     const repository = target && { url: `https://github.com/${target.owner}/${target.repo}`, ...(target.path === null ? {} : { directory: target.path }) }
     const prior = previous.get(name)
     const weeklyDownloads = kind === 'npm' ? weekly[name] ?? prior?.metadata?.sortKeys?.npm_weekly_downloads : undefined
