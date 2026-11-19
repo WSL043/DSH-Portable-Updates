@@ -13,6 +13,7 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { setTimeout as wait } from 'node:timers/promises'
+import { discoverGithub, discoverSupplement, isDshBundle, verifyDiscoveries } from './market-discovery.mjs'
 
 const CATALOG_URL = 'https://awesome-dsh-plugin.com/plugins.json'
 const PUBLICATION_INDEX_URL = 'https://cdn.jsdelivr.net/npm/dsh-plugin-catalog/index.json'
@@ -38,7 +39,7 @@ export function npmPublicationTimes(index) {
   const times = new Map()
   for (const plugin of index?.plugins ?? []) {
     for (const version of plugin.versions ?? []) {
-      if (version.source?.type === 'npm' && (!version.source.registry || version.source.registry === 'https://registry.npmjs.org/')
+      if (version.source?.type === 'npm' && (!version.source.registry || /^https:\/\/registry\.npmjs\.org\/?$/u.test(version.source.registry))
           && Number.isSafeInteger(version.publishTimestamp) && version.publishTimestamp > 0) {
         times.set(plugin.name + '@' + version.version, version.publishTimestamp)
       }
@@ -130,7 +131,7 @@ export function readManifest(text) {
     if (typeof manifest.name !== 'string' || !NAME.test(manifest.name) || manifest.name.length > 214) return null
     if (typeof manifest.version !== 'string' || !SEMVER.test(manifest.version)) return null
     const range = manifest.engines?.dsh
-    return { name: manifest.name, version: manifest.version, ...(typeof range === 'string' && range.trim() !== '' ? { engines: range } : {}), ...(typeof manifest.icon === 'string' ? { icon: manifest.icon } : {}) }
+    return { name: manifest.name, version: manifest.version, ...(isDshBundle(manifest) ? { bundle: true } : {}), ...(typeof range === 'string' && range.trim() !== '' ? { engines: range } : {}), ...(typeof manifest.icon === 'string' ? { icon: manifest.icon } : {}) }
   } catch {
     return null
   }
@@ -217,6 +218,7 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
         ...(labels.length ? { labels } : {}),
         sortKeys: {
           stars: plugin.stars ?? 0,
+          ...(publishedAt !== undefined ? { npm_released_at: publishedAt } : {}),
           downloads: plugin.downloads ?? 0,
           yearly: kind === 'npm' ? (yearly[name] ?? previousSortKeys?.yearly ?? 0) : 0,
           ...(Number.isSafeInteger(weeklyDownloads) && weeklyDownloads >= 0 ? { npm_weekly_downloads: weeklyDownloads } : {}),
@@ -237,11 +239,12 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
     index: {
       format: 1,
       title: { en: 'Awesome DSH Plugins', zh: 'Awesome DSH 插件' },
-      description: { en: 'Community catalog from awesome-dsh-plugin.com, regenerated daily by DSH-Portable.', zh: '来自 awesome-dsh-plugin.com 的社区插件目录，由 DSH-Portable 每天重新生成。' },
+      description: { en: 'Community catalog compiled from GitHub, Awesome DSH and Open Plugin Market, regenerated daily by DSH-Portable.', zh: '汇总 GitHub、Awesome DSH 和开放插件市场的社区插件目录，由 DSH-Portable 每天重新生成。' },
       metadata: {
         categories,
         labels: ACTIVITY_LABELS,
         sortKeys: {
+          npm_released_at: { title: { en: 'Latest npm releases', zh: 'npm 发布日期', ja: 'npm 公開日' }, order: 'desc' },
           recent_growth: { title: { en: 'Recent growth', zh: '近期增长', ja: '最近の伸び' }, order: 'desc' },
           stars: { title: { en: 'Stars', zh: '星标' }, order: 'desc' },
           npm_weekly_downloads: { title: { en: 'npm weekly downloads', zh: 'npm 周下载量' }, order: 'desc' },
@@ -472,6 +475,44 @@ async function lookupWorkers(concurrency, items, lookup, budget, outcomes) {
   if (budget?.aborted) outcomes['time budget reached'] = true
 }
 
+export function discoveryCandidates(catalog, resolved, github, supplementary) {
+  const known = new Set(catalog.plugins.map(plugin => {
+    if (plugin.npm) return plugin.npm
+    const target = githubTarget(plugin)
+    return target && resolved[targetKey(target)]?.headManifest?.name
+  }))
+  const candidates = new Map()
+  for (const repo of github) {
+    const target = githubTarget(repo)
+    if (!target) continue
+    const { headManifest } = resolved[targetKey(target)] ?? {}
+    if (headManifest?.bundle && !known.has(headManifest.name) && !candidates.has(headManifest.name)) {
+      candidates.set(headManifest.name, { repo })
+    }
+  }
+  for (const plugin of supplementary) {
+    if (!known.has(plugin.name) && !candidates.has(plugin.name)) candidates.set(plugin.name, {})
+  }
+  return candidates
+}
+
+function missingPublicationTimes(catalog, npmLatest, times, previous) {
+  const missing = new Map()
+  for (const plugin of orderedPlugins(catalog)) {
+    const name = plugin.npm
+    const version = name && (npmLatest[name]?.version ?? plugin.version)
+    if (!version || missing.has(name) || times.has(name + '@' + version)) continue
+    const prior = previous.get(name)
+    const verifiedAt = prior?.metadata?.sortKeys?.npm_released_at
+    if (prior?.versions?.[0]?.version === version && Number.isSafeInteger(verifiedAt) && verifiedAt > 0) {
+      times.set(name + '@' + version, verifiedAt)
+    } else {
+      missing.set(name, version)
+    }
+  }
+  return missing
+}
+
 async function main(argv) {
   const out = argv[0]
   if (!out || out.startsWith('--')) throw new Error('usage: build-market-index.mjs <out.json> [--catalog <plugins.json>] [--report <report.json>] [--previous <index.json>]')
@@ -483,17 +524,38 @@ async function main(argv) {
   const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN
   const previousPath = option('--previous')
   const previous = previousPath ? new Map(JSON.parse(await readFile(previousPath, 'utf8')).plugins.map(plugin => [plugin.name, plugin])) : new Map()
-  console.log('Resolving pinned Git sources')
-  const resolved = token ? await resolveGithub(catalog, token) : {}
-  console.log('Refreshing optional npm metadata and download statistics (five-minute budget)')
-  const budget = AbortSignal.timeout(LOOKUP_BUDGET_MS)
-  const [npmLatest, yearly, weekly, publicationTimes] = await Promise.all([
-    resolveNpm(catalog, fetch, 8, wait, budget),
-    resolveDownloadTotals(catalog, fetch, Date.now(), wait, budget),
-    resolveDownloadTotals(catalog, fetch, Date.now(), wait, budget, 'week'),
-    resolvePublicationTimes(),
+  const [github, supplementary] = await Promise.all([
+    token && catalogPath === null ? discoverGithub(token) : [],
+    catalogPath === null ? discoverSupplement() : [],
   ])
-  const { index, report } = buildIndex(catalog, resolved, undefined, npmLatest, yearly, previous, weekly, publicationTimes)
+  console.log('Resolving pinned Git sources and GitHub discovery candidates')
+  const resolved = token ? await resolveGithub({ ...catalog, plugins: [...catalog.plugins, ...github] }, token) : {}
+  const candidates = discoveryCandidates(catalog, resolved, github, supplementary)
+  const statsCatalog = { ...catalog, plugins: [...catalog.plugins, ...[...candidates.keys()].map(npm => ({ npm }))] }
+  console.log('Refreshing npm releases and download statistics')
+  const budget = AbortSignal.timeout(LOOKUP_BUDGET_MS)
+  const registry = Promise.all([resolveNpm(catalog, fetch, 8, wait, budget), resolvePublicationTimes()])
+    .then(async ([npmLatest, publicationTimes]) => {
+      const missingDates = missingPublicationTimes(catalog, npmLatest, publicationTimes, previous)
+      const discovery = await verifyDiscoveries(candidates, missingDates)
+      for (const [key, date] of discovery.dates) publicationTimes.set(key, date)
+      for (const [name, entry] of discovery.additions) {
+        npmLatest[name] = entry.release
+        publicationTimes.set(name + '@' + entry.release.version, entry.publishedAt)
+      }
+      return { npmLatest, publicationTimes, discovery }
+    })
+  const [{ npmLatest, publicationTimes, discovery }, yearly, weekly] = await Promise.all([
+    registry,
+    resolveDownloadTotals(statsCatalog, fetch, Date.now(), wait, budget),
+    resolveDownloadTotals(statsCatalog, fetch, Date.now(), wait, budget, 'week'),
+  ])
+  const extra = [...candidates.keys()].flatMap(name => discovery.additions.has(name) ? [discovery.additions.get(name).plugin] : [])
+  const merged = { ...catalog, plugins: [...catalog.plugins, ...extra] }
+  const { index, report } = buildIndex(merged, resolved, undefined, npmLatest, yearly, previous, weekly, publicationTimes)
+  const fromGithub = [...discovery.additions.keys()].filter(name => candidates.get(name).repo).length
+  report.discovery = { githubRepositories: github.length, candidates: candidates.size, fromGithub,
+    fromSupplement: extra.length - fromGithub, exactDatesRecovered: discovery.dates.size, failedRegistryLookups: discovery.failures.size }
   report.catalogUpdated = catalog.updated ?? null
   Object.assign(report, { npmLookups: npmLatest.outcomes, yearlyLookups: yearly.outcomes, weeklyLookups: weekly.outcomes,
     weeklyEntries: index.plugins.filter(plugin => plugin.metadata.sortKeys.npm_weekly_downloads !== undefined).length,

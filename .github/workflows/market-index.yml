@@ -107,7 +107,7 @@ jobs:
           set -euo pipefail
           mkdir "$RUNNER_TEMP/publish"
           cp awesome-index.json market-index-report.json "$RUNNER_TEMP/publish/"
-          printf '# Awesome DSH index for DSH-Portable\n\nGenerated daily by the `Market index` workflow from https://awesome-dsh-plugin.com/plugins.json. Do not edit.\n' > "$RUNNER_TEMP/publish/README.md"
+          printf '# Awesome DSH index for DSH-Portable\n\nGenerated daily by the `Market index` workflow from GitHub, Awesome DSH and Open Plugin Market. Do not edit.\n' > "$RUNNER_TEMP/publish/README.md"
           cd "$RUNNER_TEMP/publish"
           git init -q -b market-index
           git config user.name 'github-actions[bot]'

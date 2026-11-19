@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildIndex, buildQuery, displayTitle, githubTarget, manifestIcon, npmPublicationTimes, resolveDownloadTotals, npmIcon, resolveNpm, readManifest, readResolved, resolveGithub, targetKey } from '../scripts/build-market-index.mjs'
+import { readDiscoveredRelease } from '../scripts/market-discovery.mjs'
+import { buildIndex, buildQuery, discoveryCandidates, displayTitle, githubTarget, manifestIcon, npmPublicationTimes, resolveDownloadTotals, npmIcon, resolveNpm, readManifest, readResolved, resolveGithub, targetKey } from '../scripts/build-market-index.mjs'
 
 const SHA = 'a'.repeat(40)
 const catalog = (plugins) => ({ updated: '2026-10-16', categories: { tools: { en: 'Tools', zh: '工具' } }, plugins })
@@ -342,4 +343,48 @@ test('missing enrichment preserves published icons only for the same npm version
   assert.equal(changed.icon, undefined)
   assert.equal(changed.versions[0].engines, undefined)
   assert.equal(changed.metadata.sortKeys.yearly, 0)
+})
+
+test('GitHub supplies the root bundle identity, and the second index only fills missing names', () => {
+  const repo = { name: 'DS Bot', url: 'https://github.com/owner/bot', stars: 18 }
+  const notPlugin = { name: 'app', url: 'https://github.com/owner/app' }
+  const key = row => targetKey(githubTarget(row))
+  const candidates = discoveryCandidates(catalog([{ ...base, npm: 'already-there' }]), {
+    [key(repo)]: { head: SHA, headManifest: { name: 'root-bot', bundle: true } },
+    [key(notPlugin)]: { head: SHA, headManifest: { name: 'not-a-plugin' } },
+  }, [repo, notPlugin], [{ name: 'root-bot' }, { name: 'already-there' }, { name: 'ds-bot' }])
+  assert.deepEqual([...candidates], [['root-bot', { repo }], ['ds-bot', {}]])
+})
+
+test('new listings need the actual npm release, bundle manifest, matching GitHub identity and exact date', () => {
+  const repo = { url: 'https://github.com/owner/bot', stars: 18 }
+  const now = Math.floor(Date.parse('2026-11-19') / 1000)
+  const version = '0.3.8'
+  const manifest = {
+    name: 'ds-bot', version,
+    dsh: { bundle: { patch: './cordis.patch.yml' } },
+    repository: { url: 'git+https://github.com/Owner/Bot.git' },
+    dist: { tarball: 'https://registry.npmjs.org/ds-bot/-/ds-bot-0.3.8.tgz', integrity: 'sha512-' + 'A'.repeat(86) + '==' },
+  }
+  const published = '2026-11-17T12:34:56Z'
+  const packument = { name: manifest.name, 'dist-tags': { latest: version }, versions: { [version]: manifest },
+    time: { created: '2026-01-01T00:00:00Z', modified: '2026-11-18T00:00:00Z', [version]: published } }
+  const found = readDiscoveredRelease(manifest.name, packument, repo, now)
+  assert.equal(found.publishedAt, Date.parse(published) / 1000)
+  assert.equal(found.plugin.stars, 18)
+  const { index } = buildIndex(catalog([found.plugin]), {}, now, { [manifest.name]: found.release }, {}, new Map(), {},
+    new Map([[manifest.name + '@' + version, found.publishedAt]]))
+  assert.equal(index.plugins[0].versions[0].publishTimestamp, found.publishedAt)
+  assert.equal(index.plugins[0].metadata.sortKeys.npm_released_at, found.publishedAt)
+  assert.equal(index.plugins[0].versions[0].source.type, 'npm')
+  for (const bad of [
+    { dsh: { client: { platform: 'web' } } },
+    { repository: { url: 'https://github.com/other/other' } },
+    { dist: { ...manifest.dist, tarball: 'https://mirror.example/bot.tgz' } },
+    { deprecated: 'discontinued' },
+  ]) {
+    const versions = { [version]: { ...manifest, ...bad } }
+    assert.equal(readDiscoveredRelease(manifest.name, { ...packument, versions }, repo, now), null)
+  }
+  assert.equal(readDiscoveredRelease(manifest.name, { ...packument, time: { created: published } }, repo, now), null)
 })
