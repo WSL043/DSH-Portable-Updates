@@ -15,6 +15,8 @@ import { pathToFileURL } from 'node:url'
 import { setTimeout as wait } from 'node:timers/promises'
 
 const CATALOG_URL = 'https://awesome-dsh-plugin.com/plugins.json'
+const PUBLICATION_INDEX_URL = 'https://cdn.jsdelivr.net/npm/dsh-plugin-catalog/index.json'
+const DAY_SECONDS = 86_400
 const NAME = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/u
 const SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u
 const LOCALE = /^[a-z]{2,8}(?:-[a-z0-9]{1,8})*$/u
@@ -25,6 +27,45 @@ const TARBALL = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/r
 const BATCH = 80
 const LOOKUP_BUDGET_MS = 5 * 60_000
 const requestSignal = (ms, budget) => budget ? AbortSignal.any([budget, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms)
+const ACTIVITY_LABELS = {
+  'recent-update': { title: { en: 'Updated recently', zh: '最近更新', ja: '最近更新' } },
+  'weekly-100k': { title: { en: '↓ 100K+/week', zh: '↓ 周下载 10万+', ja: '↓ 週10万+' } },
+  'weekly-10k': { title: { en: '↓ 10K+/week', zh: '↓ 周下载 1万+', ja: '↓ 週1万+' } },
+  'weekly-1k': { title: { en: '↓ 1K+/week', zh: '↓ 周下载 1千+', ja: '↓ 週1千+' } },
+}
+
+export function npmPublicationTimes(index) {
+  const times = new Map()
+  for (const plugin of index?.plugins ?? []) {
+    for (const version of plugin.versions ?? []) {
+      if (version.source?.type === 'npm' && (!version.source.registry || version.source.registry === 'https://registry.npmjs.org/')
+          && Number.isSafeInteger(version.publishTimestamp) && version.publishTimestamp > 0) {
+        times.set(plugin.name + '@' + version.version, version.publishTimestamp)
+      }
+    }
+  }
+  return times
+}
+
+async function resolvePublicationTimes() {
+  try {
+    const response = await fetch(PUBLICATION_INDEX_URL, { signal: AbortSignal.timeout(20_000) })
+    if (!response.ok) throw new Error('HTTP ' + response.status)
+    return npmPublicationTimes(await response.json())
+  } catch (error) {
+    console.log('Exact npm publication dates unavailable: ' + error.message)
+    return new Map()
+  }
+}
+
+function activityLabels(now, publishedAt, weeklyDownloads) {
+  const labels = []
+  if (publishedAt <= now && (now - publishedAt) < 7 * DAY_SECONDS) labels.push('recent-update')
+  if (weeklyDownloads >= 100_000) labels.push('weekly-100k')
+  else if (weeklyDownloads >= 10_000) labels.push('weekly-10k')
+  else if (weeklyDownloads >= 1_000) labels.push('weekly-1k')
+  return labels
+}
 
 function localized(value) {
   if (typeof value === 'string') return value.trim() === '' ? undefined : value.trim()
@@ -102,7 +143,7 @@ function orderedPlugins(catalog) {
 /**
  * Pure builder. `resolved` maps `owner/repo` to what GitHub said: { head, headManifest, tag: { oid, manifest } } (any may be absent).
  */
-export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() / 1000), npmLatest = {}, yearly = {}, previous = new Map(), weekly = {}) {
+export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() / 1000), npmLatest = {}, yearly = {}, previous = new Map(), weekly = {}, publicationTimes = new Map()) {
   const categories = {}
   for (const [id, title] of Object.entries(catalog.categories ?? {})) {
     const text = localized(title)
@@ -156,8 +197,13 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
     const added = Math.floor(Date.parse(plugin.added) / 1000)
     const description = localized(plugin.description)
     const repository = target && { url: `https://github.com/${target.owner}/${target.repo}`, ...(target.path === null ? {} : { directory: target.path }) }
-    const previousSortKeys = previous.get(name)?.metadata?.sortKeys
-    const weeklyDownloads = kind === 'npm' ? weekly[name] ?? previousSortKeys?.npm_weekly_downloads : undefined
+    const prior = previous.get(name)
+    const weeklyDownloads = kind === 'npm' ? weekly[name] ?? prior?.metadata?.sortKeys?.npm_weekly_downloads : undefined
+    const exactDate = kind === 'npm' ? publicationTimes.get(name + '@' + version) : undefined
+    const publishedAt = exactDate <= now ? exactDate : undefined
+    const growth = kind === 'npm' ? weekly.recentGrowth?.[name] : undefined
+    const labels = activityLabels(now, publishedAt, weeklyDownloads)
+    const previousSortKeys = prior?.metadata?.sortKeys
     plugins.push({
       name,
       title: displayTitle(plugin.name) || name,
@@ -168,16 +214,18 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
       metadata: {
         ...(plugin.category && categories[plugin.category] ? { category: plugin.category } : {}),
         keywords: Array.isArray(plugin.capabilities) ? plugin.capabilities.filter(item => typeof item === 'string') : [],
+        ...(labels.length ? { labels } : {}),
         sortKeys: {
           stars: plugin.stars ?? 0,
           downloads: plugin.downloads ?? 0,
           yearly: kind === 'npm' ? (yearly[name] ?? previousSortKeys?.yearly ?? 0) : 0,
           ...(Number.isSafeInteger(weeklyDownloads) && weeklyDownloads >= 0 ? { npm_weekly_downloads: weeklyDownloads } : {}),
+          ...(Number.isSafeInteger(growth) ? { recent_growth: growth } : {}),
         },
       },
       versions: [{
         version,
-        publishTimestamp: Number.isFinite(added) ? added : fallbackTimestamp,
+        publishTimestamp: publishedAt ?? (Number.isFinite(added) ? added : fallbackTimestamp),
         source,
         ...(engines === undefined ? {} : { engines: { dsh: engines } }),
       }],
@@ -192,7 +240,9 @@ export function buildIndex(catalog, resolved = {}, now = Math.floor(Date.now() /
       description: { en: 'Community catalog from awesome-dsh-plugin.com, regenerated daily by DSH-Portable.', zh: '来自 awesome-dsh-plugin.com 的社区插件目录，由 DSH-Portable 每天重新生成。' },
       metadata: {
         categories,
+        labels: ACTIVITY_LABELS,
         sortKeys: {
+          recent_growth: { title: { en: 'Recent growth', zh: '近期增长', ja: '最近の伸び' }, order: 'desc' },
           stars: { title: { en: 'Stars', zh: '星标' }, order: 'desc' },
           npm_weekly_downloads: { title: { en: 'npm weekly downloads', zh: 'npm 周下载量' }, order: 'desc' },
           downloads: { title: { en: 'Downloads (30 days)', zh: '30 天下载量' }, order: 'desc' },
@@ -329,28 +379,51 @@ export async function resolveNpm(catalog, fetcher = fetch, concurrency = 8, paus
 }
 
 /**
- * Downloads for each npm-listed plugin from npm's statistics API. The yearly range includes today and the preceding 364 UTC days.
- * unscoped names in bulk (the API takes up to 128 per request, this asks for 100) and scoped names one by one. A name whose
+ * Compare the last two completed weeks in one response. A missing or stale series has no growth score.
+ */
+function downloadWeeks(data, now) {
+  const days = data?.downloads?.slice?.(-14)
+  const end = typeof data?.end === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(data.end) ? Date.parse(data.end) : NaN
+  const day = DAY_SECONDS * 1000
+  const today = Math.floor(now / day) * day
+  if (!Number.isFinite(end) || end >= today || end < today - day * 4 || days?.length !== 14) return null
+
+  let previous = 0
+  let latest = 0
+  for (const [index, row] of days.entries()) {
+    if (row?.day !== new Date(end - (13 - index) * day).toISOString().slice(0, 10)
+        || !Number.isSafeInteger(row.downloads) || row.downloads < 0) return null
+    if (index < 7) previous += row.downloads
+    else latest += row.downloads
+  }
+  return Number.isSafeInteger(previous) && Number.isSafeInteger(latest) ? { latest, growth: latest - previous } : null
+}
+
+/**
+ * Downloads per npm package. The yearly range includes today and the preceding 364 UTC days.
+ * Lookup uses bulk unscoped names and scoped names one by one. A name whose
  * count could not be read is left out so the builder can reuse its previous value.
  */
 export async function resolveDownloadTotals(catalog, fetcher = fetch, now = Date.now(), pause = wait, budget, interval = 'year') {
   const day = 86_400_000
   const date = value => new Date(value).toISOString().slice(0, 10)
   const today = Date.parse(`${date(now)}T00:00:00Z`)
-  const period = interval === 'week' ? 'last-week' : `${date(today - 364 * day)}:${date(today)}`
+  const weekly = interval === 'week'
+  const route = weekly ? 'range/last-month' : `point/${date(today - 364 * day)}:${date(today)}`
   const names = [...new Set((catalog.plugins ?? []).map(plugin => plugin.npm).filter(name => typeof name === 'string' && NAME.test(name) && name.length <= 214))]
   const unscoped = names.filter(name => !name.startsWith('@'))
   const batches = []
   for (let at = 0; at < unscoped.length; at += 100) batches.push(unscoped.slice(at, at + 100))
   const jobs = [...batches.map(batch => ({ batch })), ...names.filter(name => name.startsWith('@')).map(name => ({ batch: [name] }))]
   const totals = {}
+  const growth = {}
   const outcomes = {}
   const count = key => { outcomes[key] = (outcomes[key] ?? 0) + 1 }
   const run = async ({ batch }) => {
     const path = batch.map(name => name.replace('/', '%2F')).join(',')
     for (let attempt = 1; attempt <= 8; attempt += 1) {
       try {
-        const response = await fetcher(`https://api.npmjs.org/downloads/point/${period}/${path}`, { headers: { accept: 'application/json' }, signal: requestSignal(30_000, budget) })
+        const response = await fetcher(`https://api.npmjs.org/downloads/${route}/${path}`, { headers: { accept: 'application/json' }, signal: requestSignal(30_000, budget) })
         if (response.status === 429 || response.status >= 500) {
           if (attempt === 8) { count(`http ${String(response.status)}`); return }
           // npm's statistics API throttles bursts; wait longer each time, as long as the server says to.
@@ -363,7 +436,16 @@ export async function resolveDownloadTotals(catalog, fetcher = fetch, now = Date
         // One package comes back as a flat object, several as a map by name (null for an unknown one).
         const entries = batch.length === 1 ? [[batch[0], body]] : Object.entries(body ?? {})
         for (const [name, value] of entries) {
-          if (batch.includes(name) && Number.isSafeInteger(value?.downloads) && value.downloads >= 0) totals[name] = value.downloads
+          if (!batch.includes(name)) continue
+          if (weekly) {
+            const weeks = downloadWeeks(value, now)
+            if (weeks) {
+              totals[name] = weeks.latest
+              growth[name] = weeks.growth
+            }
+          } else if (Number.isSafeInteger(value?.downloads) && value.downloads >= 0) {
+            totals[name] = value.downloads
+          }
         }
         count('ok')
         return
@@ -375,6 +457,7 @@ export async function resolveDownloadTotals(catalog, fetcher = fetch, now = Date
   }
   await lookupWorkers(3, jobs, run, budget, outcomes)
   Object.defineProperty(totals, 'outcomes', { value: outcomes, enumerable: false })
+  Object.defineProperty(totals, 'recentGrowth', { value: growth, enumerable: false })
   return totals
 }
 
@@ -404,15 +487,18 @@ async function main(argv) {
   const resolved = token ? await resolveGithub(catalog, token) : {}
   console.log('Refreshing optional npm metadata and download statistics (five-minute budget)')
   const budget = AbortSignal.timeout(LOOKUP_BUDGET_MS)
-  const [npmLatest, yearly, weekly] = await Promise.all([
+  const [npmLatest, yearly, weekly, publicationTimes] = await Promise.all([
     resolveNpm(catalog, fetch, 8, wait, budget),
     resolveDownloadTotals(catalog, fetch, Date.now(), wait, budget),
     resolveDownloadTotals(catalog, fetch, Date.now(), wait, budget, 'week'),
+    resolvePublicationTimes(),
   ])
-  const { index, report } = buildIndex(catalog, resolved, undefined, npmLatest, yearly, previous, weekly)
+  const { index, report } = buildIndex(catalog, resolved, undefined, npmLatest, yearly, previous, weekly, publicationTimes)
   report.catalogUpdated = catalog.updated ?? null
   Object.assign(report, { npmLookups: npmLatest.outcomes, yearlyLookups: yearly.outcomes, weeklyLookups: weekly.outcomes,
-    weeklyEntries: index.plugins.filter(plugin => plugin.metadata.sortKeys.npm_weekly_downloads !== undefined).length })
+    weeklyEntries: index.plugins.filter(plugin => plugin.metadata.sortKeys.npm_weekly_downloads !== undefined).length,
+    growthEntries: index.plugins.filter(plugin => plugin.metadata.sortKeys.recent_growth !== undefined).length,
+    recentEntries: index.plugins.filter(plugin => plugin.metadata.labels?.includes('recent-update')).length })
   if (index.plugins.length < 1000) throw new Error(`refusing to write an index with only ${String(index.plugins.length)} plugins`)
   await writeFile(out, `${JSON.stringify(index)}\n`, 'utf8')
   const reportPath = option('--report')

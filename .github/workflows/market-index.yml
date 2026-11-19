@@ -20,7 +20,7 @@ concurrency:
 jobs:
   index:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
@@ -82,11 +82,11 @@ jobs:
             const purge = await fetch(url.replace('cdn.jsdelivr.net', 'purge.jsdelivr.net'), { signal: AbortSignal.timeout(15000) })
             if (!purge.ok) throw new Error(`CDN purge returned HTTP ${purge.status}`)
             await purge.json()
-            await waitForBytes('CDN', url, 120_000)
+            await waitForBytes('CDN', url, 300_000)
             console.log('CDN serves the exact validated index')
           }
           NODE
-          for version in 0.2.1-rc.5 0.2.2-alpha.3 0.2.2-rc.1; do
+          for version in 0.2.1-rc.5 0.2.2-alpha.3 0.2.2-rc.1 0.2.2-rc.5; do
             echo "Validating with official DSH $version"
             npm install --prefix "$version" --ignore-scripts --no-audit --no-fund "@deepseek-ai/dsh-plugin-market-index@$version" >/dev/null
             cp validate.mjs "$version/"
@@ -117,4 +117,4 @@ jobs:
           git push -q --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" market-index
       - name: Refresh and verify the public CDN index
         timeout-minutes: 9
-        run: node "$RUNNER_TEMP/validate/0.2.2-rc.1/validate.mjs" "$GITHUB_WORKSPACE/awesome-index.json" --cdn
+        run: node "$RUNNER_TEMP/validate/0.2.2-rc.5/validate.mjs" "$GITHUB_WORKSPACE/awesome-index.json" --cdn

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildIndex, buildQuery, displayTitle, githubTarget, manifestIcon, resolveDownloadTotals, npmIcon, resolveNpm, readManifest, readResolved, resolveGithub, targetKey } from '../scripts/build-market-index.mjs'
+import { buildIndex, buildQuery, displayTitle, githubTarget, manifestIcon, npmPublicationTimes, resolveDownloadTotals, npmIcon, resolveNpm, readManifest, readResolved, resolveGithub, targetKey } from '../scripts/build-market-index.mjs'
 
 const SHA = 'a'.repeat(40)
 const catalog = (plugins) => ({ updated: '2026-10-16', categories: { tools: { en: 'Tools', zh: '工具' } }, plugins })
@@ -219,16 +219,44 @@ test('the one-year download count is read in bulk for plain names and singly for
   assert.equal(index.metadata.sortKeys.yearly.order, 'desc')
 })
 
-test('weekly downloads use the npm week and preserve a previously published count on a lookup miss', async () => {
-  const plugins = [{ ...base, npm: 'a', version: '1.0.0' }, { ...base, npm: 'b', version: '1.0.0' }]
+test('the npm range compares two complete weeks and preserves prior weekly counts on a miss', async () => {
+  const end = Date.parse('2026-10-16')
+  const now = Date.parse('2026-10-17T12:00:00Z')
+  const days = Array.from({ length: 14 }, (_, i) => ({
+    day: new Date(end - (13 - i) * 86_400_000).toISOString().slice(0, 10), downloads: i < 7 ? 1_000 : 2_000,
+  }))
+  const plugins = ['a', 'b', 'c', 'd'].map(npm => ({ ...base, npm, version: '1.0.0' }))
   const totals = await resolveDownloadTotals(catalog(plugins), async url => {
-    assert.match(url, /\/downloads\/point\/last-week\/a,b$/)
-    return { ok: true, status: 200, json: async () => ({ a: { downloads: 17 }, b: null }) }
-  }, undefined, undefined, undefined, 'week')
-  const previous = new Map([['b', { metadata: { sortKeys: { npm_weekly_downloads: 23 } } }]])
-  const { index } = buildIndex(catalog(plugins), {}, undefined, {}, {}, previous, totals)
-  assert.deepEqual(index.plugins.map(plugin => plugin.metadata.sortKeys.npm_weekly_downloads), [17, 23])
+    assert.match(url, /\/downloads\/range\/last-month\/a,b,c,d$/)
+    return { ok: true, status: 200, json: async () => ({
+      a: { end: '2026-10-16', downloads: days }, b: null,
+      c: { end: '2026-10-16', downloads: days.slice(1) },
+      d: { end: '2026-10-16', downloads: days.map((day, i) => ({ ...day, downloads: i < 7 ? 2_000 : 1_000 })) },
+    }) }
+  }, now, undefined, undefined, 'week')
+  const previous = new Map([['b', { metadata: { sortKeys: { npm_weekly_downloads: 23, recent_growth: 100 } } }]])
+  const guideDate = Math.floor(now / 1000) - 10
+  const publicationTimes = npmPublicationTimes({ plugins: [
+    { name: 'a', versions: [{ version: '1.0.0', publishTimestamp: guideDate, source: { type: 'npm' } }] },
+    { name: 'b', versions: [{ version: '0.9.0', publishTimestamp: guideDate, source: { type: 'npm' } }] },
+    { name: 'c', versions: [{ version: '1.0.0', publishTimestamp: guideDate, source: { type: 'npm', registry: 'https://other.example/' } }] },
+    { name: 'd', versions: [{ version: '1.0.0', publishTimestamp: guideDate, source: { type: 'git' } }] },
+  ] })
+  const { index } = buildIndex(catalog(plugins), {}, Math.floor(now / 1000), {}, {}, previous, totals, publicationTimes)
+  const [a, b, c, d] = index.plugins
+  assert.deepEqual(a.metadata.labels, ['recent-update', 'weekly-10k'])
+  assert.equal(a.versions[0].publishTimestamp, guideDate)
+  assert.equal(a.metadata.sortKeys.npm_weekly_downloads, 14_000)
+  assert.equal(a.metadata.sortKeys.recent_growth, 7_000)
+  assert.equal(b.metadata.sortKeys.npm_weekly_downloads, 23)
+  assert.equal(b.metadata.sortKeys.recent_growth, undefined)
+  assert.equal(b.metadata.labels, undefined)
+  assert.equal(c.metadata.sortKeys.recent_growth, undefined)
+  assert.equal(c.metadata.labels, undefined)
+  assert.deepEqual(d.metadata.labels, ['weekly-1k'])
+  assert.equal(d.metadata.sortKeys.recent_growth, -7_000)
   assert.equal(index.metadata.sortKeys.npm_weekly_downloads.order, 'desc')
+  assert.equal(index.metadata.sortKeys.recent_growth.title.zh, '近期增长')
 })
 
 test('the default order is by downloads, with no plugin pinned to the front', () => {
