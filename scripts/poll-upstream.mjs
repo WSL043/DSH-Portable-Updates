@@ -2,6 +2,7 @@
 // Scheduled fallback for GitHub's delayed cron. Only dispatches the existing qualification workflows.
 import { execFileSync, execSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
+import { selectNativeRelease } from './select-native-release.mjs'
 import { compareVersions, isValidSemVer } from './build-core-index.mjs'
 
 const CORE_REPO = 'WSL043/DSH-Portable-Updates'
@@ -50,10 +51,15 @@ async function pollCore() {
 
   const stateUrl = 'https://github.com/' + CORE_REPO + '/releases/download/update-channel-core/qualification-state.json'
   const state = await (await get(stateUrl, fetch)).json()
-  const newestRecords = state.filter(entry => entry.version === newest)
+  const baseline = selectNativeRelease(JSON.parse(run('gh', ['api', 'repos/' + DESKTOP_REPO + '/releases?per_page=100'])))
+  const pipeline = JSON.parse(run('gh', ['api', 'repos/' + CORE_REPO + '/commits/main'])).sha
+  const newestRecords = state.filter(entry => entry.version === newest && entry.sourceSha === baseline.target_commitish)
   if (newestRecords.some(entry => entry.status === 'success')) return 'Core ' + newest + ' already has a successful qualification'
-  const record = newestRecords.sort((a, b) => String(b.attemptedAt).localeCompare(String(a.attemptedAt)))[0]
-  if (record) return retryUnassignedCoreRunner(record) ?? ('Core ' + newest + ': last qualification is ' + record.status)
+  const record = newestRecords.filter(entry => entry.pipelineSha === pipeline)
+    .sort((a, b) => String(b.attemptedAt).localeCompare(String(a.attemptedAt)))[0]
+  if (record && (record.status === 'blocked' || Date.parse(record.retryAfter) > Date.now())) {
+    return retryUnassignedCoreRunner(record) ?? ('Core ' + newest + ': last qualification is ' + record.status)
+  }
 
   const active = JSON.parse(run('gh', ['run', 'list', '-R', CORE_REPO, '--workflow', 'sync-core.yml', '-L', '10', '--json', 'status']))
   if (active.some(r => r.status !== 'completed')) return 'Core ' + newest + ': a sync run is already active'
