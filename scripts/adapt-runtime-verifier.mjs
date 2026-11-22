@@ -29,7 +29,27 @@ export function adaptCoreUpdateSmoke(source) {
   return source.replace(oldRequest, newRequest)
 }
 
+
+export function adaptStartupThemeSmoke(source) {
+  if (source.includes('const captureError = await nativeCapture')) return source
+  const start = source.indexOf("    await exec('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',\n      path.join(import.meta.dirname, 'capture-windows-native-window.ps1')")
+  const end = source.indexOf('    let loading', start)
+  const launch = '  try {\n    let page'
+  if (start < 0 || end < 0 || source.split(launch).length !== 2) throw new Error('Unrecognized startup capture verification seam')
+  const capture = source.slice(start, end)
+    .replace('    await exec(', '    const nativeCapture = exec(')
+    .replace('String(child.pid),', "String(child.pid), '-WindowTimeoutSeconds', '180',")
+    .replace('timeout: 20000 })', 'timeout: 200000 }).then(() => null, error => error)')
+  return (source.slice(0, start) + '    const captureError = await nativeCapture\n    if (captureError) throw captureError\n' + source.slice(end))
+    .replace(launch, '  try {\n' + capture + '    let page')
+}
+
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+  const startupFile = path.join(path.resolve(process.argv[2]), 'scripts/smoke-windows-startup-theme.mjs')
+  const startup = await readFile(startupFile, 'utf8')
+  const adaptedStartup = adaptStartupThemeSmoke(startup)
+  if (startup !== adaptedStartup) await writeFile(startupFile, adaptedStartup)
+
   const smokeFile = path.join(path.resolve(process.argv[2]), 'scripts/smoke-update-artifact.mjs')
   const smoke = await readFile(smokeFile, 'utf8')
   const adaptedSmoke = adaptCoreUpdateSmoke(smoke)
