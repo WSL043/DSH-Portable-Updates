@@ -20,7 +20,21 @@ export function adaptRuntimeVerifier(source) {
   return source.replace(oldImport, newImport).replace(oldCall, newCall)
 }
 
+
+export function adaptCoreUpdateSmoke(source) {
+  const oldRequest = "      const response = await fetch(new URL('/dsh-market/installed', status.url), { signal: AbortSignal.timeout(15000) })"
+  const newRequest = "      const login = await fetch(status.url, { redirect: 'manual', signal: AbortSignal.timeout(15000) })\n      const setCookie = login.headers.get('set-cookie')\n      const headers = setCookie ? { cookie: setCookie.split(';', 1)[0] } : {}\n      const response = await fetch(new URL('/dsh-market/installed', status.url), { headers, signal: AbortSignal.timeout(15000) })"
+  if (source.includes(newRequest)) return source
+  if (source.split(oldRequest).length !== 2) throw new Error('Unrecognized core update plugin verification request')
+  return source.replace(oldRequest, newRequest)
+}
+
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+  const smokeFile = path.join(path.resolve(process.argv[2]), 'scripts/smoke-update-artifact.mjs')
+  const smoke = await readFile(smokeFile, 'utf8')
+  const adaptedSmoke = adaptCoreUpdateSmoke(smoke)
+  if (smoke !== adaptedSmoke) await writeFile(smokeFile, adaptedSmoke)
+
   const target = path.join(path.resolve(process.argv[2]), 'scripts/verify-runtime.mjs')
   const input = await readFile(target, 'utf8')
   const output = adaptRuntimeVerifier(input)
