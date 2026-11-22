@@ -51,7 +51,7 @@ async function pollCore() {
 
   const stateUrl = 'https://github.com/' + CORE_REPO + '/releases/download/update-channel-core/qualification-state.json'
   const state = await (await get(stateUrl, fetch)).json()
-  const baseline = selectNativeRelease(JSON.parse(run('gh', ['api', 'repos/' + DESKTOP_REPO + '/releases?per_page=100'])))
+  const baseline = selectNativeRelease(JSON.parse(run('gh', ['api', 'repos/' + DESKTOP_REPO + '/releases?per_page=100', '--jq', '[.[] | {draft, prerelease, tag_name, published_at, target_commitish, assets: [.assets[] | {name}]}]'])))
   const pipeline = JSON.parse(run('gh', ['api', 'repos/' + CORE_REPO + '/commits/main'])).sha
   const newestRecords = state.filter(entry => entry.version === newest && entry.sourceSha === baseline.target_commitish)
   if (newestRecords.some(entry => entry.status === 'success')) return 'Core ' + newest + ' already has a successful qualification'
