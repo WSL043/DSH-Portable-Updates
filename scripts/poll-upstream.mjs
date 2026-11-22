@@ -3,6 +3,7 @@
 import { execFileSync, execSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 import { selectNativeRelease } from './select-native-release.mjs'
+import { selectCoreWindow } from './core-window.mjs'
 import { compareVersions, isValidSemVer } from './build-core-index.mjs'
 
 const CORE_REPO = 'WSL043/DSH-Portable-Updates'
@@ -46,13 +47,20 @@ export function retryUnassignedCoreRunner(record, invoke = run) {
 
 async function pollCore() {
   const times = JSON.parse(run('npm', ['view', '@deepseek-ai/dsh', 'time', '--json']))
-  const newest = Object.entries(times).filter(([v]) => v !== 'created' && v !== 'modified').sort((a, b) => a[1].localeCompare(b[1])).at(-1)?.[0]
-  if (!newest) throw new Error('npm returned no versions')
+  const window = selectCoreWindow(Object.keys(times).filter(isValidSemVer).sort((a, b) => compareVersions(b, a)))
+  if (!window.length) throw new Error('npm returned no versions')
 
   const stateUrl = 'https://github.com/' + CORE_REPO + '/releases/download/update-channel-core/qualification-state.json'
   const state = await (await get(stateUrl, fetch)).json()
   const baseline = selectNativeRelease(JSON.parse(run('gh', ['api', 'repos/' + DESKTOP_REPO + '/releases?per_page=100', '--jq', '[.[] | {draft, prerelease, tag_name, published_at, target_commitish, assets: [.assets[] | {name}]}]'])))
   const pipeline = JSON.parse(run('gh', ['api', 'repos/' + CORE_REPO + '/commits/main'])).sha
+  // A Node baseline change also needs the retained rollback choices requalified.
+  const pending = window.filter(version => !state.some(entry =>
+    entry.version === version && entry.sourceSha === baseline.target_commitish && entry.status === 'success'))
+  if (!pending.length) return 'Core window: all versions qualified for ' + baseline.tag_name
+  const newest = pending.find(version => !state.some(entry => entry.version === version
+    && entry.sourceSha === baseline.target_commitish && entry.pipelineSha === pipeline
+    && (entry.status === 'blocked' || (entry.status === 'failed' && Date.parse(entry.retryAfter) > Date.now())))) ?? pending[0]
   const newestRecords = state.filter(entry => entry.version === newest && entry.sourceSha === baseline.target_commitish)
   if (newestRecords.some(entry => entry.status === 'success')) return 'Core ' + newest + ' already has a successful qualification'
   const record = newestRecords.filter(entry => entry.pipelineSha === pipeline)
@@ -63,7 +71,7 @@ async function pollCore() {
 
   const active = JSON.parse(run('gh', ['run', 'list', '-R', CORE_REPO, '--workflow', 'sync-core.yml', '-L', '10', '--json', 'status']))
   if (active.some(r => r.status !== 'completed')) return 'Core ' + newest + ': a sync run is already active'
-  const link = run('gh', ['workflow', 'run', 'sync-core.yml', '-R', CORE_REPO, '--ref', 'main', '-f', 'remaining=2']).trim()
+  const link = run('gh', ['workflow', 'run', 'sync-core.yml', '-R', CORE_REPO, '--ref', 'main', '-f', 'remaining=4']).trim()
   return 'Core ' + newest + ': scheduled poll dispatched Sync verified DSH core ' + link
 }
 
