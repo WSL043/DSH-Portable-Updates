@@ -78,7 +78,7 @@ jobs:
           path: update-channel
       - uses: actions/setup-node@v7
         with:
-          node-version: 24.22.1
+          node-version: 24.22.3
       - name: Verify the narrow upstream historical boundary
         run: node --test update-channel/tests/historical-core-policy.test.mjs
       - name: Initialize selection record
@@ -203,7 +203,7 @@ jobs:
       - name: Install the published product's pinned semver verifier
         if: steps.discovery.outputs.publish == 'true'
         run: npm ci --prefix portable-source/app --ignore-scripts --no-audit --no-fund
-      - name: Block incompatible default plugins before source build
+      - name: Check the published shell’s Node and default plugins before source build
         if: steps.discovery.outputs.publish == 'true'
         id: plugin-preflight
         run: node update-channel/scripts/preflight-adapters.mjs --default-peers-only portable-source resolved-core/lock.json > preflight.json
@@ -299,7 +299,7 @@ jobs:
         run: cp resolved-core/lock.json "$LOCK_FILE"
       - uses: actions/setup-node@v7
         with:
-          node-version: 24.22.1
+          node-version: 24.22.3
       - name: Resolve the locked official source
         id: preview
         env:
@@ -449,7 +449,7 @@ jobs:
         run: cp resolved-core/lock.json "$LOCK_FILE"
       - uses: actions/setup-node@v7
         with:
-          node-version: 24.22.1
+          node-version: 24.22.3
       - uses: actions/download-artifact@v8
         if: needs.resolve.outputs.release_tag == ''
         with:
@@ -686,7 +686,7 @@ jobs:
           path: update-channel
       - uses: actions/setup-node@v7
         with:
-          node-version: 24.22.1
+          node-version: 24.22.3
       - uses: actions/download-artifact@v8
         with:
           name: core-stable-windows-x64
@@ -744,7 +744,7 @@ jobs:
           path: update-channel
       - uses: actions/setup-node@v7
         with:
-          node-version: 24.22.1
+          node-version: 24.22.3
       # Resolve has verified the prepare run, pipeline, published source and fresh lock.
       # Read its accepted bytes directly; signing below still requires all five archive checks.
       - uses: actions/download-artifact@v8
@@ -876,7 +876,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 24.22.1
+          node-version: 24.22.3
       - name: Report channel delivery separately from historical backfill
         env:
           CHANNEL: stable
@@ -918,7 +918,7 @@ jobs:
           path: selection
       - uses: actions/setup-node@v7
         with:
-          node-version: 24.22.1
+          node-version: 24.22.3
       - name: Record the qualification result with a retry cooldown
         env:
           GH_TOKEN: ${{ github.token }}

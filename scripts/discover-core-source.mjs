@@ -345,6 +345,12 @@ export async function discoverCoreSource({
   }
   if (selected.version) {
     lock.dsh.integrity = selected.integrity
+    const nodeEngine = registry.versions[selected.version]?.engines?.node
+    if (nodeEngine !== undefined && (typeof nodeEngine !== 'string' || !nodeEngine.trim())) {
+      throw new Error('Official npm package has an invalid Node requirement.')
+    }
+    delete lock.dsh.nodeEngine
+    if (nodeEngine !== undefined) lock.dsh.nodeEngine = nodeEngine
     delete lock.dsh.npmIntegrity
   }
   await mkdir(path.dirname(output), { recursive: true })

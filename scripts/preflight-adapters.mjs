@@ -231,11 +231,24 @@ export function bindCoreManifestDefaultPlugins(manifest, binding, { portableVers
   return bound
 }
 
+export function checkNodeRuntime(nodeVersion, requirement, semver) {
+  if (!isValidSemVer(nodeVersion) || (requirement !== undefined && !semver.validRange(requirement))) {
+    throw new Error('Invalid Portable Node version or official Node requirement.')
+  }
+  if (requirement !== undefined && !semver.satisfies(nodeVersion, requirement)) {
+    return { status: 'blocked', adapter: 'node-runtime',
+      reason: `The official core requires Node ${requirement}, but the published Portable shell contains Node ${nodeVersion}. Core updates do not replace Node.` }
+  }
+  return { status: 'success' }
+}
+
 export async function preflightPinnedDefaultPlugins(root, lockFile) {
   const candidate = JSON.parse(await readFile(lockFile, 'utf8'))
   const product = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'))
   const productLock = JSON.parse(await readFile(path.join(root, product.version.includes('-') ? 'upstream.preview.lock.json' : 'upstream.lock.json'), 'utf8'))
   const semver = createRequire(path.resolve(root, 'app/package.json'))('semver')
+  const runtime = checkNodeRuntime(productLock.node.version, candidate.dsh.nodeEngine, semver)
+  if (runtime.status !== 'success') return runtime
   return checkDefaultPluginPeers(productLock, await fetchPinnedDefaultPluginManifests(productLock), candidate.dsh.version, semver.satisfies)
 }
 

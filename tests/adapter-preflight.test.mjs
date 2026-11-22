@@ -3,11 +3,25 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { gzipSync } from 'node:zlib'
 import { isValidSemVer } from '../scripts/build-core-index.mjs'
-import { ADAPTERS, preflightAdapters, checkDefaultPluginCapabilities, checkDefaultPluginPeers, fetchPinnedDefaultPluginManifests,
+import { ADAPTERS, preflightAdapters, checkNodeRuntime, checkDefaultPluginCapabilities, checkDefaultPluginPeers, fetchPinnedDefaultPluginManifests,
   CONTRACT_DEFAULT_PLUGIN_BASELINES, readVerifiedDefaultPluginManifest, fetchContractDefaultPluginManifests,
   checkContractDefaultPluginBinding, resolveCoreDefaultPluginBinding, bindCoreManifestDefaultPlugins } from '../scripts/preflight-adapters.mjs'
 import { selectCoreRelease } from '../scripts/discover-core-source.mjs'
 import { updateQualificationState } from '../scripts/update-qualification-state.mjs'
+
+test('a core requiring a newer Node stays off the published shell feed', () => {
+  const requirement = '^24.22.3 || >=26.13.1'
+  const semver = {
+    validRange: value => value === requirement,
+    satisfies: (version, range) => version === '24.22.3' && range === requirement,
+  }
+  const published = checkNodeRuntime('24.22.1', requirement, semver)
+  assert.equal(published.status, 'blocked')
+  assert.equal(published.adapter, 'node-runtime')
+  assert.match(published.reason, /Core updates do not replace Node/)
+  assert.equal(checkNodeRuntime('24.22.3', requirement, semver).status, 'success')
+  assert.throws(() => checkNodeRuntime('24.22.3', 'invalid', semver), /Invalid/)
+})
 
 test('the shipped native-slot chat client cannot qualify a host without that slot', () => {
   const lock = { defaultPlugins: { chatManager: { version: '1.5.0' } } }
