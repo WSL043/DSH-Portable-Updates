@@ -1,0 +1,43 @@
+{
+  "catalogEntries": 13989,
+  "included": 12445,
+  "counts": {
+    "npm": 7565,
+    "git": 4880
+  },
+  "skips": {
+    "duplicate package name": 518,
+    "release tarball is not supported by the official index": 934,
+    "repository has no readable package.json": 27,
+    "no default branch commit": 64,
+    "not hosted on GitHub and not on npm": 1
+  },
+  "discovery": {
+    "githubRepositories": 187,
+    "candidates": 433,
+    "fromGithub": 21,
+    "fromSupplement": 388,
+    "exactDatesRecovered": 87,
+    "failedRegistryLookups": 0
+  },
+  "catalogUpdated": "2026-11-27",
+  "npmLookups": {
+    "ok": 585,
+    "http 429": 718,
+    "snapshot ok": 715,
+    "snapshot http 403": 1,
+    "snapshot network": 2,
+    "time budget reached": true
+  },
+  "yearlyLookups": {
+    "ok": 108,
+    "time budget reached": true
+  },
+  "weeklyLookups": {
+    "ok": 117,
+    "time budget reached": true
+  },
+  "weeklyEntries": 6036,
+  "growthEntries": 5850,
+  "recentEntries": 2101
+}
